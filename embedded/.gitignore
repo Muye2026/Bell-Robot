@@ -1,0 +1,16 @@
+# PlatformIO build outputs and local indexes
+firmware/.pio/
+firmware/.piolibdeps/
+firmware/.clangd/
+firmware/compile_commands.json
+
+# Editor settings
+.vscode/
+.idea/
+
+# OS noise
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
