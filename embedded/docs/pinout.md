@@ -1,6 +1,6 @@
 # 引脚连接
 
-当前依据用户提供的 Freenove ESP32-S3 WROOM Pinout，以及官方 `Sketch_07.1_CameraWebServer/camera_pins.h`。固件引脚集中在 `firmware/include/config.h`。
+当前依据用户提供的 Freenove ESP32-S3 WROOM Pinout，以及官方 `Sketch_07.1_CameraWebServer/camera_pins.h`。ESP-IDF 主线固件引脚集中在 `firmware-idf/main/app_config.h`；旧 Arduino 回退工程仍保留在 `firmware/include/config.h`。
 
 ## OLED
 

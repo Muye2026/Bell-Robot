@@ -4,6 +4,13 @@ firmware/.piolibdeps/
 firmware/.clangd/
 firmware/compile_commands.json
 
+# ESP-IDF build outputs
+firmware-idf/build*/
+firmware-idf/sdkconfig
+firmware-idf/sdkconfig.old
+firmware-idf/managed_components/
+firmware-idf/dependencies.lock
+
 # Editor settings
 .vscode/
 .idea/
