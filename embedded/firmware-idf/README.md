@@ -58,6 +58,8 @@ python model\train_seat_model.py --dataset model\dataset --out main\seat_model_d
 
 第一版模型是本地 int8 二分类器，输入为画面中部偏上的 `8x8` 归一化灰度特征，用于区分桌前坐姿和离开。特征会先减去 ROI 全局平均亮度，再做有限幅度缩放，降低整体光照变化影响。后续若迁入完整 TFLite Micro 坐姿/人体模型，可复用当前 `SeatModel` 接口，不需要重写计时和 Web 接口。
 
+如果当前还没有直接从 `/label` 导出的样本，可以先用 `model/prepare_seed_dataset.py` 从手机预览截图中提取真实预览画面，生成第一版种子数据。当前仓库里的第一版非占位模型就是用这条链路启动的：核心正样本来自你的真实桌前坐姿截图，外加 `MPIIGaze` 官方示例图里的上半身桌前样例；负样本来自同视角合成 `absent` 和 `Edinburgh office monitoring video dataset` 的空办公室样例帧。它的作用是先把固件从 `model_untrained` 切到 `model_ready=true`，不是最终准确率版本。
+
 ## 本地脚本
 
 - `tools/use-idf-env.ps1`：为当前终端注入 `IDF_PATH`、`IDF_TOOLS_PATH` 和本机 Python 路径。

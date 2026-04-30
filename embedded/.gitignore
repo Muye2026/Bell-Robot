@@ -10,6 +10,9 @@ firmware-idf/sdkconfig
 firmware-idf/sdkconfig.old
 firmware-idf/managed_components/
 firmware-idf/dependencies.lock
+firmware-idf/model/dataset/*/*.pgm
+firmware-idf/model/open_seed/
+firmware-idf/model/*overview*.jpg
 
 # Editor settings
 .vscode/

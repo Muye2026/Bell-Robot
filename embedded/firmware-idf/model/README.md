@@ -23,6 +23,24 @@ model/dataset/
 - 当前主线：`/label` 导出的 `8x8` 归一化 PGM。
 - 兼容旧数据：整帧灰度 PGM，脚本会按当前 ROI 配置裁剪并做同样的归一化。
 
+如果手头只有手机截图，而不是设备直接导出的 `/label` 样本，可先用：
+
+```powershell
+python model\prepare_seed_dataset.py --out model\dataset <截图1> <截图2> ...
+```
+
+这个脚本会自动从 `Bill Camera Preview` 手机截图里裁出真实预览画面，生成一批 `seated` 种子样本，并基于同视角背景插值合成一批 `absent` 种子样本。它只适合第一版冷启动，后续仍应尽快用设备直出的 `/label?class=absent|seated` 覆盖。
+
+2026-05-01 的第一版非占位模型使用了两类正样本来源：
+
+- 你提供的 3 张真实桌前坐姿截图。
+- `MPIIGaze` 官方示例图里的上半身桌前样例块。
+
+负样本来源：
+
+- `prepare_seed_dataset.py` 从真实截图合成的同视角 `absent`。
+- `Edinburgh office monitoring video dataset` 官方页面提供的空办公室样例帧。
+
 建议第一轮至少采集：
 
 - 离开/无人：白天 20 张、夜间 20 张。

@@ -88,6 +88,37 @@ const char *stateLabel(TimerState state) {
   return "UNKNOWN";
 }
 
+const char *displayStateLabel(TimerState state, bool isPresent) {
+  switch (state) {
+  case TimerState::Idle:
+    return isPresent ? "SEATED" : "EMPTY";
+  case TimerState::Sitting:
+    return "SEATED";
+  case TimerState::AwayGrace:
+  case TimerState::AwayWarning:
+    return "AWAY";
+  case TimerState::Alerting:
+    return "ALERT";
+  }
+  return "UNKNOWN";
+}
+
+const char *displayStateHint(TimerState state, bool isPresent) {
+  switch (state) {
+  case TimerState::Idle:
+    return isPresent ? "Timer starting" : "No one in view";
+  case TimerState::Sitting:
+    return "Person at desk";
+  case TimerState::AwayGrace:
+    return "Short leave";
+  case TimerState::AwayWarning:
+    return "Reset soon";
+  case TimerState::Alerting:
+    return "Stand up now";
+  }
+  return "";
+}
+
 void formatTime(uint32_t ms, char *buffer, size_t bufferSize) {
   const uint32_t totalSeconds = (ms + 999) / 1000;
   snprintf(buffer, bufferSize, "%02lu:%02lu",
@@ -492,20 +523,31 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
   const char *timerText = timerContext.state == TimerState::Alerting ? "STAND!" : remaining;
   const int timerWidth = scaledTextWidth(timerText, kLargeTimerScale);
   const int timerX = std::max(0, (OLED_WIDTH - timerWidth) / 2);
+  const char *displayState = displayStateLabel(timerContext.state, isPresent);
+  const char *displayHint = displayStateHint(timerContext.state, isPresent);
+  const char *detectText = isPresent ? "sit" : "away";
+  const char *modeText = diag.modelReady ? "mdl" : "fbk";
 
   display.clear();
-  display.textf(0, 0, "S:%s P:%s", stateLabel(timerContext.state), isPresent ? "sit" : "away");
-  display.textf(0, 1, "M:%02u R:%c B:%c",
+  display.textf(0, 0, "STATE:%s", displayState);
+  display.textf(0, 1, "%s", displayHint);
+  display.textf(0, 2, "P:%s %s:%02u B:%c",
+                detectText,
+                modeText,
                 static_cast<unsigned>(diag.modelProbability * 100.0f),
-                diag.modelReady ? 'Y' : 'N',
                 isButtonDown() ? 'L' : 'H');
-  display.textf(0, 2, "D:%u Base:%u", diag.diff, diag.baseline);
   display.textScaled(timerX, 28, kLargeTimerScale, timerText);
   if (timerContext.state == TimerState::AwayGrace || timerContext.state == TimerState::AwayWarning) {
     char away[8] = {};
     const uint32_t awayMs = nowMs - timerContext.awayStartMs;
     formatTime(AWAY_RESET_MS - std::min(awayMs, AWAY_RESET_MS), away, sizeof(away));
     display.textf(0, 7, "Reset in %s", away);
+  } else if (timerContext.state == TimerState::Idle && !diag.modelReady) {
+    display.textf(0, 7, "Fallback D:%u B:%u", diag.diff, diag.baseline);
+  } else if (timerContext.state == TimerState::Sitting) {
+    display.textf(0, 7, "Prob:%02u%%", static_cast<unsigned>(diag.modelProbability * 100.0f));
+  } else if (timerContext.state == TimerState::Alerting) {
+    display.textf(0, 7, "Press button");
   }
   display.flush();
 }
