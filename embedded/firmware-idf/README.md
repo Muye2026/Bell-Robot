@@ -34,7 +34,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1
 
 - `/`：预览页面。
 - `/capture`：当前摄像头 JPEG 图。
-- `/status`：JSON 状态，包含 `model_prob`、`model_ready`、`inference_ms`、`fallback_reason`。
+- `/status`：JSON 状态，包含 `model_prob`、`model_ready`、`inference_ms`、`fallback_reason`、`sit_minutes`、`away_minutes`。
+- `/settings`：`GET` 返回当前倒计时和离场容忍分钟数；`POST` 接收 `sit_minutes=1..180&away_minutes=1..5` 并写入 NVS。
 - `/reset`：重置计时并重新校准 ROI fallback。
 - `/label?class=seated`：采集一帧桌前坐姿样本。
 - `/label?class=absent`：采集一帧离开/无人样本。
@@ -62,7 +63,7 @@ python model\train_seat_model.py --dataset model\dataset --out main\seat_model_d
 
 当前模型 `1.2` 已补入真实工位无人/有人截图，以及 4 张真实坐下办公漏判截图。补充正样本后训练使用 `--balance-classes`，优先在提升坐姿召回的同时控制空工位误判。训练脚本的 ROI 已与固件侧 `buildModelFeatures()` 对齐，避免离线训练区域和上板推理区域不一致。为排查现场坐下仍不倒计时问题，当前触发阈值临时降到 `0.50`，同时在 OLED、串口和 `/status` 暴露原始单帧结果、连续帧计数和阈值。
 
-OLED 当前按逆时针 90 度软件旋转输出，逻辑画布为 `64x128` 竖屏；倒计时拆成分钟/秒两块 4 倍大字显示，倒计时区域只保留数字，顶部压缩显示状态、识别概率和连续帧诊断。中途离场策略为离开 10 秒提示、离开 15 秒重置本轮计时。
+OLED 当前按逆时针 90 度软件旋转输出，逻辑画布为 `64x128` 竖屏；倒计时拆成分钟/秒两块 4 倍大字显示，倒计时区域只保留数字，顶部压缩显示状态、识别概率和连续帧诊断。中途离场策略为离开 10 秒提示、按网页配置的离场容忍时间重置本轮计时；默认离场容忍时间为 1 分钟。
 
 ## 本地脚本
 

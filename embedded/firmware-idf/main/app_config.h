@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 // Core timing policy.
-static constexpr uint32_t SIT_TARGET_MS = 45UL * 60UL * 1000UL;
+static constexpr uint32_t DEFAULT_SIT_TARGET_MS = 45UL * 60UL * 1000UL;
 static constexpr uint32_t AWAY_GRACE_MS = 10UL * 1000UL;
-static constexpr uint32_t AWAY_RESET_MS = 15UL * 1000UL;
+static constexpr uint32_t DEFAULT_AWAY_RESET_MS = 1UL * 60UL * 1000UL;
 
 // Display: SPI SSD1306 128x64 module with pins SCK/MOSI/RES/DC/CS.
 // The physical panel is mounted in portrait; render a 64x128 logical canvas

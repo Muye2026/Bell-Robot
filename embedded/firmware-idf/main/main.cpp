@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 #include "img_converters.h"
 #include "lwip/ip4_addr.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "seat_model.h"
 #include "ssd1306_spi.h"
@@ -28,6 +29,14 @@ constexpr char kTag[] = "bell_robot";
 constexpr uint32_t kFeatureCount = 64;
 constexpr int kTimerDigitScale = 4;
 constexpr int kAlertScale = 2;
+constexpr uint32_t kMsPerMinute = 60UL * 1000UL;
+constexpr uint32_t kSitMinMinutes = 1;
+constexpr uint32_t kSitMaxMinutes = 180;
+constexpr uint32_t kAwayMinMinutes = 1;
+constexpr uint32_t kAwayMaxMinutes = 5;
+constexpr char kTimerNvsNamespace[] = "timer";
+constexpr char kSitMinutesKey[] = "sit_min";
+constexpr char kAwayMinutesKey[] = "away_min";
 
 enum class TimerState {
   Idle,
@@ -41,6 +50,11 @@ struct TimerContext {
   TimerState state = TimerState::Idle;
   uint32_t sitStartMs = 0;
   uint32_t awayStartMs = 0;
+};
+
+struct TimerSettings {
+  uint32_t sitTargetMs = DEFAULT_SIT_TARGET_MS;
+  uint32_t awayResetMs = DEFAULT_AWAY_RESET_MS;
 };
 
 struct PresenceDiagnostics {
@@ -61,6 +75,7 @@ struct PresenceDiagnostics {
 Ssd1306Spi display;
 SeatModel seatModel;
 TimerContext timerContext;
+TimerSettings timerSettings;
 httpd_handle_t httpServer = nullptr;
 
 uint32_t lastDisplayMs = 0;
@@ -128,6 +143,70 @@ void normalizeNvsInit() {
     err = nvs_flash_init();
   }
   ESP_ERROR_CHECK(err);
+}
+
+uint32_t minutesFromMs(uint32_t ms) {
+  return ms / kMsPerMinute;
+}
+
+uint32_t msFromMinutes(uint32_t minutes) {
+  return minutes * kMsPerMinute;
+}
+
+bool validTimerMinutes(uint32_t sitMinutes, uint32_t awayMinutes) {
+  return sitMinutes >= kSitMinMinutes && sitMinutes <= kSitMaxMinutes &&
+         awayMinutes >= kAwayMinMinutes && awayMinutes <= kAwayMaxMinutes;
+}
+
+void applyTimerMinutes(uint32_t sitMinutes, uint32_t awayMinutes) {
+  timerSettings.sitTargetMs = msFromMinutes(sitMinutes);
+  timerSettings.awayResetMs = msFromMinutes(awayMinutes);
+}
+
+void loadTimerSettings() {
+  uint32_t sitMinutes = minutesFromMs(DEFAULT_SIT_TARGET_MS);
+  uint32_t awayMinutes = minutesFromMs(DEFAULT_AWAY_RESET_MS);
+  nvs_handle_t handle = 0;
+  const esp_err_t openErr = nvs_open(kTimerNvsNamespace, NVS_READONLY, &handle);
+  if (openErr == ESP_OK) {
+    uint32_t storedSitMinutes = sitMinutes;
+    uint32_t storedAwayMinutes = awayMinutes;
+    if (nvs_get_u32(handle, kSitMinutesKey, &storedSitMinutes) == ESP_OK &&
+        nvs_get_u32(handle, kAwayMinutesKey, &storedAwayMinutes) == ESP_OK &&
+        validTimerMinutes(storedSitMinutes, storedAwayMinutes)) {
+      sitMinutes = storedSitMinutes;
+      awayMinutes = storedAwayMinutes;
+    }
+    nvs_close(handle);
+  }
+  applyTimerMinutes(sitMinutes, awayMinutes);
+  ESP_LOGI(kTag, "timer settings: sit=%lu min away=%lu min",
+           static_cast<unsigned long>(sitMinutes),
+           static_cast<unsigned long>(awayMinutes));
+}
+
+esp_err_t saveTimerSettings(uint32_t sitMinutes, uint32_t awayMinutes) {
+  if (!validTimerMinutes(sitMinutes, awayMinutes)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t handle = 0;
+  esp_err_t err = nvs_open(kTimerNvsNamespace, NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    return err;
+  }
+  err = nvs_set_u32(handle, kSitMinutesKey, sitMinutes);
+  if (err == ESP_OK) {
+    err = nvs_set_u32(handle, kAwayMinutesKey, awayMinutes);
+  }
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  if (err == ESP_OK) {
+    applyTimerMinutes(sitMinutes, awayMinutes);
+  }
+  return err;
 }
 
 class PresenceDetector {
@@ -408,7 +487,7 @@ uint32_t elapsedSittingMs(uint32_t nowMs) {
 
 uint32_t remainingSitMs(uint32_t nowMs) {
   const uint32_t elapsed = elapsedSittingMs(nowMs);
-  return elapsed >= SIT_TARGET_MS ? 0 : SIT_TARGET_MS - elapsed;
+  return elapsed >= timerSettings.sitTargetMs ? 0 : timerSettings.sitTargetMs - elapsed;
 }
 
 void startSitting(uint32_t nowMs) {
@@ -428,7 +507,7 @@ void updateTimer(bool isPresent, uint32_t nowMs) {
     if (!isPresent) {
       timerContext.state = TimerState::AwayGrace;
       timerContext.awayStartMs = nowMs;
-    } else if (elapsedSittingMs(nowMs) >= SIT_TARGET_MS) {
+    } else if (elapsedSittingMs(nowMs) >= timerSettings.sitTargetMs) {
       timerContext.state = TimerState::Alerting;
     }
     break;
@@ -439,7 +518,7 @@ void updateTimer(bool isPresent, uint32_t nowMs) {
       break;
     }
     const uint32_t awayMs = nowMs - timerContext.awayStartMs;
-    if (awayMs >= AWAY_RESET_MS) {
+    if (awayMs >= timerSettings.awayResetMs) {
       resetTimer();
     } else if (awayMs >= AWAY_GRACE_MS) {
       timerContext.state = TimerState::AwayWarning;
@@ -450,7 +529,7 @@ void updateTimer(bool isPresent, uint32_t nowMs) {
     if (isPresent) {
       timerContext.state = TimerState::Sitting;
       timerContext.awayStartMs = 0;
-    } else if (nowMs - timerContext.awayStartMs >= AWAY_RESET_MS) {
+    } else if (nowMs - timerContext.awayStartMs >= timerSettings.awayResetMs) {
       resetTimer();
     }
     break;
@@ -543,7 +622,7 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
   if (timerContext.state == TimerState::AwayGrace || timerContext.state == TimerState::AwayWarning) {
     char away[8] = {};
     const uint32_t awayMs = nowMs - timerContext.awayStartMs;
-    formatTime(AWAY_RESET_MS - std::min(awayMs, AWAY_RESET_MS), away, sizeof(away));
+    formatTime(timerSettings.awayResetMs - std::min(awayMs, timerSettings.awayResetMs), away, sizeof(away));
     display.textf(0, 14, "RST %s", away);
   } else if (timerContext.state == TimerState::Idle && !diag.modelReady) {
     display.textf(0, 14, "FB D:%u", diag.diff);
@@ -563,7 +642,7 @@ void logStatus(bool isPresent, uint32_t nowMs) {
 
   const PresenceDiagnostics diag = presenceDetector.diagnostics();
   ESP_LOGI(kTag,
-           "tick state=%s pose=%s raw=%c on=%u off=%u model=%c prob=%u th=%u diff=%u base=%u btn=%c",
+           "tick state=%s pose=%s raw=%c on=%u off=%u model=%c prob=%u th=%u diff=%u base=%u btn=%c sit=%lu away=%lu",
            stateLabel(timerContext.state),
            isPresent ? "sit" : "away",
            diag.rawPresent ? 'Y' : 'N',
@@ -574,21 +653,35 @@ void logStatus(bool isPresent, uint32_t nowMs) {
            static_cast<unsigned>(MODEL_OCCUPIED_THRESHOLD * 100.0f),
            diag.diff,
            diag.baseline,
-           isButtonDown() ? 'L' : 'H');
+           isButtonDown() ? 'L' : 'H',
+           static_cast<unsigned long>(minutesFromMs(timerSettings.sitTargetMs)),
+           static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)));
 }
 
 esp_err_t sendIndex(httpd_req_t *req) {
   static constexpr char html[] =
-      "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
       "<title>Bell Robot Camera</title><style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}"
-      "main{max-width:760px;margin:24px auto;padding:0 16px}img{width:100%;height:auto;background:#222}"
-      "button,a{font-size:18px;padding:10px 14px;margin:6px;display:inline-block}</style></head><body><main>"
+      "main{max-width:760px;margin:20px auto;padding:0 14px}img{width:100%;height:auto;background:#222}"
+      "button,a,input{font-size:18px}button,a{padding:10px 14px;margin:6px 6px 6px 0;display:inline-block}"
+      "a{color:#8cc8ff}.settings{margin:16px 0;padding:12px;border:1px solid #333;background:#181818}"
+      "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
+      "#msg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
       "<h2>Bell Robot Camera</h2><img id='frame' src='/capture?ts=0'>"
       "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a></p>"
+      "<form class='settings' onsubmit='saveSettings(event)'>"
+      "<label for='sit'>倒计时（分钟）</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
+      "<label for='away'>离场容忍（分钟）</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
+      "<button type='submit'>保存设置</button><span id='msg'></span></form>"
       "<p><a href='/label?class=absent'>Save absent sample</a><a href='/label?class=seated'>Save seated sample</a></p>"
       "<script>function refreshFrame(){document.getElementById('frame').src='/capture?ts='+Date.now()}"
-      "setInterval(refreshFrame,1000)</script></main></body></html>";
-  httpd_resp_set_type(req, "text/html");
+      "async function loadSettings(){let r=await fetch('/settings');let s=await r.json();document.getElementById('sit').value=s.sit_minutes;document.getElementById('away').value=s.away_minutes}"
+      "async function saveSettings(e){e.preventDefault();let sit=document.getElementById('sit'),away=document.getElementById('away'),msg=document.getElementById('msg');msg.textContent='Saving...';"
+      "let b='sit_minutes='+encodeURIComponent(sit.value)+'&away_minutes='+encodeURIComponent(away.value);"
+      "let r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});"
+      "msg.textContent=r.ok?'Saved':'Save failed'}"
+      "setInterval(refreshFrame,1000);loadSettings()</script></main></body></html>";
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -625,9 +718,85 @@ esp_err_t sendCapture(httpd_req_t *req) {
   return err;
 }
 
+esp_err_t sendSettings(httpd_req_t *req) {
+  char payload[96] = {};
+  snprintf(payload,
+           sizeof(payload),
+           "{\"sit_minutes\":%lu,\"away_minutes\":%lu}",
+           static_cast<unsigned long>(minutesFromMs(timerSettings.sitTargetMs)),
+           static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)));
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, payload, HTTPD_RESP_USE_STRLEN);
+}
+
+bool parseUnsignedStrict(const char *value, uint32_t *out) {
+  if (value == nullptr || *value == '\0' || out == nullptr) {
+    return false;
+  }
+  char *end = nullptr;
+  const unsigned long parsed = strtoul(value, &end, 10);
+  if (end == value || *end != '\0' || parsed > UINT32_MAX) {
+    return false;
+  }
+  *out = static_cast<uint32_t>(parsed);
+  return true;
+}
+
+esp_err_t readPostBody(httpd_req_t *req, char *buffer, size_t bufferSize) {
+  if (req->content_len == 0 || req->content_len >= bufferSize) {
+    return ESP_FAIL;
+  }
+
+  size_t received = 0;
+  while (received < req->content_len) {
+    const int read = httpd_req_recv(req,
+                                    buffer + received,
+                                    req->content_len - received);
+    if (read <= 0) {
+      return ESP_FAIL;
+    }
+    received += read;
+  }
+  buffer[received] = '\0';
+  return ESP_OK;
+}
+
+esp_err_t handleSettingsPost(httpd_req_t *req) {
+  char body[96] = {};
+  if (readPostBody(req, body, sizeof(body)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid settings body");
+    return ESP_FAIL;
+  }
+
+  char sitValue[16] = {};
+  char awayValue[16] = {};
+  if (httpd_query_key_value(body, "sit_minutes", sitValue, sizeof(sitValue)) != ESP_OK ||
+      httpd_query_key_value(body, "away_minutes", awayValue, sizeof(awayValue)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing timer settings");
+    return ESP_FAIL;
+  }
+
+  uint32_t sitMinutes = 0;
+  uint32_t awayMinutes = 0;
+  if (!parseUnsignedStrict(sitValue, &sitMinutes) ||
+      !parseUnsignedStrict(awayValue, &awayMinutes) ||
+      !validTimerMinutes(sitMinutes, awayMinutes)) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "settings out of range");
+    return ESP_FAIL;
+  }
+
+  const esp_err_t err = saveTimerSettings(sitMinutes, awayMinutes);
+  if (err != ESP_OK) {
+    ESP_LOGE(kTag, "save settings failed: %s", esp_err_to_name(err));
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save settings failed");
+    return ESP_FAIL;
+  }
+  return sendSettings(req);
+}
+
 esp_err_t sendStatus(httpd_req_t *req) {
   const PresenceDiagnostics diag = presenceDetector.diagnostics();
-  char payload[640] = {};
+  char payload[768] = {};
   snprintf(payload,
            sizeof(payload),
            "{\"state\":\"%s\",\"present\":%s,\"calibrated\":%s,\"score\":%u,"
@@ -635,7 +804,7 @@ esp_err_t sendStatus(httpd_req_t *req) {
            "\"on_frames\":%u,\"off_frames\":%u,\"on_required\":%u,"
            "\"model_ready\":%s,\"model_prob\":%.3f,\"model_threshold\":%.2f,"
            "\"model_version\":\"%s\",\"inference_ms\":%lu,"
-           "\"fallback_reason\":\"%s\"}",
+           "\"fallback_reason\":\"%s\",\"sit_minutes\":%lu,\"away_minutes\":%lu}",
            stateLabel(timerContext.state),
            diag.present ? "true" : "false",
            diag.calibrated ? "true" : "false",
@@ -652,7 +821,9 @@ esp_err_t sendStatus(httpd_req_t *req) {
            static_cast<double>(MODEL_OCCUPIED_THRESHOLD),
            seatModel.version(),
            static_cast<unsigned long>(diag.inferenceMs),
-           diag.fallbackReason == nullptr ? "" : diag.fallbackReason);
+           diag.fallbackReason == nullptr ? "" : diag.fallbackReason,
+           static_cast<unsigned long>(minutesFromMs(timerSettings.sitTargetMs)),
+           static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)));
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_send(req, payload, HTTPD_RESP_USE_STRLEN);
 }
@@ -745,6 +916,16 @@ void startWebServer() {
   reset.method = HTTP_GET;
   reset.handler = handleReset;
 
+  httpd_uri_t settingsGet = {};
+  settingsGet.uri = "/settings";
+  settingsGet.method = HTTP_GET;
+  settingsGet.handler = sendSettings;
+
+  httpd_uri_t settingsPost = {};
+  settingsPost.uri = "/settings";
+  settingsPost.method = HTTP_POST;
+  settingsPost.handler = handleSettingsPost;
+
   httpd_uri_t label = {};
   label.uri = "/label";
   label.method = HTTP_GET;
@@ -754,11 +935,12 @@ void startWebServer() {
   httpd_register_uri_handler(httpServer, &capture);
   httpd_register_uri_handler(httpServer, &status);
   httpd_register_uri_handler(httpServer, &reset);
+  httpd_register_uri_handler(httpServer, &settingsGet);
+  httpd_register_uri_handler(httpServer, &settingsPost);
   httpd_register_uri_handler(httpServer, &label);
 }
 
 void startWifiAp() {
-  normalizeNvsInit();
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   esp_netif_t *apNetif = esp_netif_create_default_wifi_ap();
@@ -804,6 +986,8 @@ void setupButton() {
 } // namespace
 
 extern "C" void app_main(void) {
+  normalizeNvsInit();
+  loadTimerSettings();
   buzzerBegin();
   setupButton();
   display.begin();

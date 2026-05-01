@@ -24,7 +24,7 @@ flowchart LR
 - `display_ui`：显示当前状态、剩余时间、暂离时间和提醒信息。
 - `alert_output`：控制蜂鸣器提醒节奏。
 - `button_input`：处理确认、静音和手动重置。
-- `web_api`：提供 `/capture`、`/status`、`/reset`、`/label?class=absent|seated`，并兼容旧 `empty|occupied` 标签。
+- `web_api`：提供 `/capture`、`/status`、`/settings`、`/reset`、`/label?class=absent|seated`，支持网页调节倒计时和离场容忍时间，并兼容旧 `empty|occupied` 标签。
 
 ## 状态机
 
@@ -33,21 +33,21 @@ stateDiagram-v2
   [*] --> Idle
   Idle --> Sitting: 检测到桌前坐姿
   Sitting --> AwayGrace: 检测到离开
-  AwayGrace --> Sitting: 5 秒内返回
-  AwayGrace --> AwayWarning: 离开超过 5 秒
-  AwayWarning --> Sitting: 10 秒内返回
-  AwayWarning --> Idle: 离开超过 10 秒
-  Sitting --> Alerting: 连续坐满 45 分钟
+  AwayGrace --> Sitting: 10 秒内返回
+  AwayGrace --> AwayWarning: 离开超过 10 秒
+  AwayWarning --> Sitting: 容忍时间内返回
+  AwayWarning --> Idle: 离开超过容忍时间
+  Sitting --> Alerting: 连续坐满设定时长
   Alerting --> Idle: 按键确认
 ```
 
 ## 计时规则
 
 - 坐下后记录 `sitStartMs`，用当前时间减去坐下开始时间计算已坐时间。
-- 5 秒内暂离不重置，也不扣除暂离时间。
-- 离开 5-10 秒期间显示“即将重置”。
-- 离开超过 10 秒后丢弃本轮计时，回到待机。
-- 满 45 分钟后进入提醒状态，直到按键确认。
+- 10 秒内暂离不重置，也不扣除暂离时间。
+- 离开 10 秒到设定容忍时间期间显示“即将重置”。
+- 离开超过设定容忍时间后丢弃本轮计时，回到待机。
+- 满设定倒计时时长后进入提醒状态，直到按键确认。
 
 ## 摄像头检测策略
 
