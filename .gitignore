@@ -1,0 +1,25 @@
+# Model training generated data
+model/dataset/**/*.pgm
+model/open_seed/
+model/*overview*.jpg
+model/candidate_preview/raw/
+model/candidate_preview/*.jpg
+model/candidate_preview/*.csv
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor settings
+.vscode/
+.idea/
+
+# OS noise
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log

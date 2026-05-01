@@ -20,5 +20,5 @@ Constraints confirmed by user:
 ## Status
 
 - These candidate files have not been added to `model/dataset`.
-- `main/seat_model_data.h` has not been regenerated from these candidates.
+- `embedded/firmware-idf/main/seat_model_data.h` has not been regenerated from these candidates.
 - Keep generating preview sheets first; retraining requires explicit confirmation after the next usable batch is selected.

@@ -4,13 +4,7 @@ firmware-idf/sdkconfig
 firmware-idf/sdkconfig.old
 firmware-idf/managed_components/
 firmware-idf/dependencies.lock
-firmware-idf/model/dataset/*/*.pgm
-firmware-idf/model/open_seed/
-firmware-idf/model/*overview*.jpg
-firmware-idf/model/candidate_preview/raw/
-firmware-idf/model/candidate_preview/*.jpg
-firmware-idf/model/candidate_preview/*.csv
-firmware-idf/model/__pycache__/
+firmware-idf/.idf_component_manager/
 
 # Editor settings
 .vscode/

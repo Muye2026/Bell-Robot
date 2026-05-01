@@ -29,7 +29,7 @@ static constexpr uint32_t BUZZER_FREQUENCY_HZ = 2400;
 static constexpr uint32_t BUZZER_DUTY = 128;
 
 // Camera preview AP.
-static constexpr char CAMERA_PREVIEW_AP_SSID[] = "Bill-Camera";
+static constexpr char CAMERA_PREVIEW_AP_SSID[] = "Bell-Robot";
 static constexpr char CAMERA_PREVIEW_AP_PASSWORD[] = "12345678";
 static constexpr uint8_t CAMERA_PREVIEW_AP_IP_0 = 192;
 static constexpr uint8_t CAMERA_PREVIEW_AP_IP_1 = 168;
