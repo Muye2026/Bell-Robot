@@ -534,6 +534,9 @@ void updateTimer(bool isPresent, uint32_t nowMs) {
     }
     break;
   case TimerState::Alerting:
+    if (!isPresent) {
+      resetTimer();
+    }
     break;
   }
 }
