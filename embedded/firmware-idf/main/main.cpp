@@ -478,7 +478,17 @@ void resetTimer() {
 }
 
 uint32_t elapsedSittingMs(uint32_t nowMs) {
-  return timerContext.state == TimerState::Idle ? 0 : nowMs - timerContext.sitStartMs;
+  switch (timerContext.state) {
+  case TimerState::Idle:
+    return 0;
+  case TimerState::AwayGrace:
+  case TimerState::AwayWarning:
+    return timerContext.awayStartMs - timerContext.sitStartMs;
+  case TimerState::Sitting:
+  case TimerState::Alerting:
+    return nowMs - timerContext.sitStartMs;
+  }
+  return 0;
 }
 
 uint32_t remainingSitMs(uint32_t nowMs) {
@@ -490,6 +500,12 @@ void startSitting(uint32_t nowMs) {
   timerContext.state = TimerState::Sitting;
   timerContext.sitStartMs = nowMs;
   timerContext.awayStartMs = 0;
+}
+
+void resumeSittingAfterAway(uint32_t nowMs) {
+  timerContext.sitStartMs += nowMs - timerContext.awayStartMs;
+  timerContext.awayStartMs = 0;
+  timerContext.state = TimerState::Sitting;
 }
 
 void updateTimer(bool isPresent, uint32_t nowMs) {
@@ -509,8 +525,7 @@ void updateTimer(bool isPresent, uint32_t nowMs) {
     break;
   case TimerState::AwayGrace: {
     if (isPresent) {
-      timerContext.state = TimerState::Sitting;
-      timerContext.awayStartMs = 0;
+      resumeSittingAfterAway(nowMs);
       break;
     }
     const uint32_t awayMs = nowMs - timerContext.awayStartMs;
@@ -523,8 +538,7 @@ void updateTimer(bool isPresent, uint32_t nowMs) {
   }
   case TimerState::AwayWarning:
     if (isPresent) {
-      timerContext.state = TimerState::Sitting;
-      timerContext.awayStartMs = 0;
+      resumeSittingAfterAway(nowMs);
     } else if (nowMs - timerContext.awayStartMs >= timerSettings.awayResetMs) {
       resetTimer();
     }

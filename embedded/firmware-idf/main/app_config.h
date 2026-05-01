@@ -42,7 +42,7 @@ static constexpr bool CAMERA_HMIRROR = false;
 
 // Presence detector tuning.
 static constexpr uint32_t CAMERA_SAMPLE_INTERVAL_MS = 500;
-static constexpr uint8_t PRESENCE_ON_FRAMES = 6;
+static constexpr uint8_t PRESENCE_ON_FRAMES = 5;
 static constexpr uint8_t PRESENCE_OFF_FRAMES = 5;
 static constexpr uint8_t PRESENCE_CALIBRATION_FRAMES = 8;
 static constexpr uint16_t ROI_DIFF_THRESHOLD = 35;

@@ -7,7 +7,7 @@
 - 固件：`firmware-idf/` 是唯一主线。
 - 硬件：Freenove ESP32-S3 N16R8 CAM + OV5640CSP + SPI SSD1306 OLED + 无源蜂鸣器 + 单按键。
 - 网络：固定 AP 直连，SSID `Bell-Robot`，密码 `12345678`，地址 `http://192.168.4.1/`。
-- 计时：默认坐满 45 分钟提醒；离开 10 秒提示即将重置；默认离开 1 分钟重置本轮。倒计时和离场容忍时间可在网页调整并写入 NVS。
+- 计时：默认坐满 45 分钟提醒；暂离容忍时间内倒计时暂停，回来后继续；默认离开 1 分钟重置本轮。倒计时和离场容忍时间可在网页调整并写入 NVS。
 - 模型：本地 int8 桌前坐姿二分类；模型不可用时回退到 ROI 灰度差分。
 
 ## 目录
@@ -72,6 +72,8 @@ python model\train_seat_model.py --dataset model\dataset --out embedded\firmware
 - 2026-05-01：设备热点 SSID 改为 `Bell-Robot`；已构建并烧录到 `COM13`，写入和 Hash 校验通过；固件大小 `0xe0cf0`，APP 分区剩余约 12%。
 - 2026-05-01：已清理可再生成产物：`firmware-idf/build*`、`managed_components`、`sdkconfig`、`dependencies.lock` 和 `model/__pycache__`。
 - 2026-05-01：OLED 倒计时主界面精简为状态、倒计时和 `PROB` 识别概率三项，移除帧数、raw、RST 和按键提示等诊断文字。
+- 2026-05-01：暂离容忍时间内倒计时暂停，回来后继续；入座确认从 6 帧改为 5 帧，采样间隔保持 500ms。
+- 2026-05-01：暂离暂停倒计时版本已构建通过；固件大小 `0xe0b80`，APP 分区剩余约 12%。
 
 ## 待核对
 
