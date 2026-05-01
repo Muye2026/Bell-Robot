@@ -47,3 +47,12 @@ python model\prepare_seed_dataset.py --out model\dataset <截图1> <截图2> ...
 - 桌前坐姿：正面 20 张、前斜侧面 20 张、深浅衣服各 20 张。
 - 边界样本：半离开、弯腰、低头、身体只露一部分，各 10 张以上。
 - 每次摄像头角度变动后重新采集。
+
+2026-05-01 第二版种子模型：
+
+- 使用用户确认的 Openverse 可商用候选方向扩充训练集。
+- 正样本来源：`candidate_overview_openverse_selected_v13.jpg`，13 个桌前坐姿候选图块，每个生成 4 个灰度增强样本。
+- 负样本来源：`candidate_overview_openverse_emptydesk_v14.jpg`，18 个空工位候选图块，每个生成 4 个灰度增强样本。
+- 由于原始 Flickr/Openverse 图片下载触发 429 限流，本轮用已确认预览 sheet 裁切图块导入；后续能下载原图时应替换为原图导入。
+- 当前训练集规模：`seated=115`，`absent=99`。
+- 固件模型版本：`kSeatModelVersion = "1.1"`。

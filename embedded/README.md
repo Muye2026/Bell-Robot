@@ -11,7 +11,7 @@
 - 交互：单按键用于确认提醒、重置计时和重新校准。
 - 识别：ESP-IDF 主线固件使用本地 int8 桌前坐姿模型；无训练模型时自动回退到 ROI 灰度差分。
 - 计时：坐下后 45 分钟倒计时；离开 5 秒后提示即将重置；离开超过 10 秒后本轮计时作废。
-- 固件入口：`firmware-idf/` 是当前唯一主线；`firmware/` 只作为 legacy fallback 保留到 `firmware-idf` 完成整机实机验证。
+- 固件入口：`firmware-idf/` 是当前唯一主线。
 
 ## 目录结构
 
@@ -25,7 +25,6 @@ embedded/
     bom.md
     pinout.md
     pretrain-data.md
-  firmware/              # legacy PlatformIO + Arduino 回退工程，暂不删除
   firmware-idf/          # 当前唯一主线 ESP-IDF 工程
     main/
     model/
@@ -40,13 +39,6 @@ cd D:\Project\Bell-Robot\embedded\firmware-idf
 idf.py set-target esp32s3
 idf.py build
 idf.py -p COM13 flash monitor
-```
-
-旧 Arduino 回退工程，仅用于回退对比，不再承载新功能开发：
-
-```powershell
-cd D:\Project\Bell-Robot\embedded\firmware
-C:\Users\23171\.platformio\penv\Scripts\pio.exe run
 ```
 
 ## ESP-IDF Web 接口
@@ -89,12 +81,11 @@ idf.py build
 - `firmware-idf/main/main.cpp`：ESP-IDF 主程序，包含摄像头、AP、HTTP 接口、状态机、按钮、蜂鸣器和显示刷新。
 - `firmware-idf/main/seat_model.*`：本地 int8 模型推理接口。
 - `firmware-idf/main/seat_model_data.h`：训练脚本生成的模型权重；当前已切换到第一版非占位模型，后续继续用真实样本迭代。
-- `firmware-idf/main/ssd1306_spi.*`：不依赖 Arduino/U8g2 的最小 SPI SSD1306 文本显示驱动。
+- `firmware-idf/main/ssd1306_spi.*`：最小 SPI SSD1306 文本显示驱动。
 - `firmware-idf/model/train_seat_model.py`：从采集的 PGM 样本训练并生成模型头文件。
 - `firmware-idf/model/prepare_seed_dataset.py`：从手机预览截图提取真实预览画面并生成种子训练集。
 - `firmware-idf/tools/*.ps1`：本机固定路径的 ESP-IDF 环境和构建脚本。
 - `docs/pretrain-data.md`：公开预训练数据源筛选和数据策略。
-- `firmware/`：旧 PlatformIO 工程，当前仅保留用于回退验证；待 `firmware-idf` 完成实机闭环后再统一删除。
 
 ## 2026-05-01 更新
 
@@ -108,16 +99,16 @@ idf.py build
 - OLED 倒计时改为 3 倍大字居中显示，顶部状态/诊断信息压缩为 3 行小字，优先保证剩余时间醒目。
 - OLED 现已直接显示 `STATE:SEATED / AWAY / EMPTY / ALERT`，便于现场判断模型当前把画面识别成“有人坐着、暂时离开、无人、提醒中”的哪一种状态。
 - 本机已完成 ESP-IDF 5.4.4 工具链安装，并补齐 `build-idf.ps1` 的增量构建目录支持。
-- 已完成“软删除前收口”：`firmware-idf/` 明确为唯一主线，`firmware/` 明确标记为 legacy fallback，待 `firmware-idf` 实机验证通过后再统一删除旧 Arduino 目录和相关说明。
+- 已删除旧固件目录和相关回退说明，`firmware-idf/` 保持唯一主线。
 
 ## 已验证
 
-- 2026-04-29 至 2026-04-30：旧 PlatformIO 固件多轮编译和烧录通过，实物板识别为 ESP32-S3，PSRAM 8MB 正常。
 - 2026-05-01：`firmware-idf` 已完成 `idf.py build`，生成 `build-run/bell_robot_seat_model.bin`。
 - 2026-05-01：第一版非占位 `seat_model_data.h` 已生成，`build-run` 再次编译通过。
 - 2026-05-01：新 OLED 大字倒计时版本已成功烧录到 `COM13`，芯片识别为 `ESP32-S3`，MAC 为 `e0:72:a1:f6:39:10`。
 - 2026-05-01：手机已可连接 `Bill-Camera` 热点，并正常打开摄像头预览网页，实时画面可见。
 - 2026-05-01：SPI OLED 显示正常，按键功能正常。
+- 2026-05-01：模型 `1.1` 固件已成功烧录到 `COM13`。
 
 ## 待核对
 

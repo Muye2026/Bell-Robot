@@ -1,9 +1,3 @@
-# PlatformIO build outputs and local indexes
-firmware/.pio/
-firmware/.piolibdeps/
-firmware/.clangd/
-firmware/compile_commands.json
-
 # ESP-IDF build outputs
 firmware-idf/build*/
 firmware-idf/sdkconfig
@@ -13,6 +7,10 @@ firmware-idf/dependencies.lock
 firmware-idf/model/dataset/*/*.pgm
 firmware-idf/model/open_seed/
 firmware-idf/model/*overview*.jpg
+firmware-idf/model/candidate_preview/raw/
+firmware-idf/model/candidate_preview/*.jpg
+firmware-idf/model/candidate_preview/*.csv
+firmware-idf/model/__pycache__/
 
 # Editor settings
 .vscode/

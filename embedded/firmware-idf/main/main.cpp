@@ -620,12 +620,13 @@ esp_err_t sendCapture(httpd_req_t *req) {
 
 esp_err_t sendStatus(httpd_req_t *req) {
   const PresenceDiagnostics diag = presenceDetector.diagnostics();
-  char payload[384] = {};
+  char payload[448] = {};
   snprintf(payload,
            sizeof(payload),
            "{\"state\":\"%s\",\"present\":%s,\"calibrated\":%s,\"score\":%u,"
            "\"baseline\":%u,\"diff\":%u,\"button\":%s,\"model_ready\":%s,"
-           "\"model_prob\":%.3f,\"inference_ms\":%lu,\"fallback_reason\":\"%s\"}",
+           "\"model_prob\":%.3f,\"model_version\":\"%s\",\"inference_ms\":%lu,"
+           "\"fallback_reason\":\"%s\"}",
            stateLabel(timerContext.state),
            diag.present ? "true" : "false",
            diag.calibrated ? "true" : "false",
@@ -635,6 +636,7 @@ esp_err_t sendStatus(httpd_req_t *req) {
            isButtonDown() ? "true" : "false",
            diag.modelReady ? "true" : "false",
            static_cast<double>(diag.modelProbability),
+           seatModel.version(),
            static_cast<unsigned long>(diag.inferenceMs),
            diag.fallbackReason == nullptr ? "" : diag.fallbackReason);
   httpd_resp_set_type(req, "application/json");

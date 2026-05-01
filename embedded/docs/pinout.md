@@ -1,6 +1,6 @@
 # 引脚连接
 
-当前依据用户提供的 Freenove ESP32-S3 WROOM Pinout，以及官方 `Sketch_07.1_CameraWebServer/camera_pins.h`。ESP-IDF 主线固件引脚集中在 `firmware-idf/main/app_config.h`；旧 Arduino 回退工程仍保留在 `firmware/include/config.h`。
+当前依据用户提供的 Freenove ESP32-S3 WROOM Pinout，以及官方 `Sketch_07.1_CameraWebServer/camera_pins.h`。ESP-IDF 主线固件引脚集中在 `firmware-idf/main/app_config.h`。
 
 ## OLED
 
@@ -25,7 +25,7 @@
 | 正极 | GPIO 21 | PWM 方波输出，可在 `PIN_BUZZER` 修改 |
 | 负极 | GND | 地 |
 
-当前按两引脚普通无源蜂鸣器处理，固件使用 `tone()` 输出 `BUZZER_FREQUENCY_HZ` 方波。若蜂鸣器电流较大或声音太小，应使用三极管或 MOSFET 驱动，不要长期直接由 GPIO 承载大电流。
+当前按两引脚普通无源蜂鸣器处理，固件使用 LEDC PWM 输出 `BUZZER_FREQUENCY_HZ` 方波。若蜂鸣器电流较大或声音太小，应使用三极管或 MOSFET 驱动，不要长期直接由 GPIO 承载大电流。
 
 ## 按键
 

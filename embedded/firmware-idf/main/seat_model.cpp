@@ -9,6 +9,10 @@ bool SeatModel::begin() {
   return kSeatModelTrained && kSeatModelFeatureCount > 0;
 }
 
+const char *SeatModel::version() const {
+  return kSeatModelVersion;
+}
+
 SeatModelResult SeatModel::infer(const int8_t *features, size_t featureCount) {
   const int64_t startUs = esp_timer_get_time();
   SeatModelResult result = {};

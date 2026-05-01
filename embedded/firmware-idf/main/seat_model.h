@@ -14,4 +14,5 @@ class SeatModel {
 public:
   bool begin();
   SeatModelResult infer(const int8_t *features, size_t featureCount);
+  const char *version() const;
 };
