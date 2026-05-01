@@ -165,6 +165,15 @@ function sendIndex(res) {
     </section>
   </main>
   <script>
+    let editingSettings = false;
+    let settingsDirty = false;
+    function markEditing(){
+      editingSettings = true;
+      settingsDirty = true;
+    }
+    function stopEditing(){
+      editingSettings = false;
+    }
     async function getJson(url, options){
       const r = await fetch(url, options);
       if(!r.ok) throw new Error(await r.text());
@@ -176,8 +185,10 @@ function sendIndex(res) {
         const st = data.status || {};
         document.getElementById('summary').textContent = data.online ? '设备在线' : '设备离线';
         document.getElementById('status').textContent = JSON.stringify(st, null, 2);
-        if(st.sit_minutes) document.getElementById('sit').value = st.sit_minutes;
-        if(st.away_minutes) document.getElementById('away').value = st.away_minutes;
+        if(!editingSettings && !settingsDirty){
+          if(st.sit_minutes) document.getElementById('sit').value = st.sit_minutes;
+          if(st.away_minutes) document.getElementById('away').value = st.away_minutes;
+        }
       }catch(e){
         document.getElementById('summary').textContent = '状态读取失败';
       }
@@ -208,6 +219,8 @@ function sendIndex(res) {
             away_minutes:Number(document.getElementById('away').value)
           })
         });
+        settingsDirty = false;
+        editingSettings = false;
         msg.textContent = 'Saved';
       }catch(e){
         msg.textContent = 'Save failed';
@@ -223,6 +236,14 @@ function sendIndex(res) {
         msg.textContent = 'Reset failed';
       }
     }
+    document.addEventListener('DOMContentLoaded', () => {
+      for (const id of ['sit', 'away']) {
+        const input = document.getElementById(id);
+        input.addEventListener('focus', markEditing);
+        input.addEventListener('input', markEditing);
+        input.addEventListener('blur', stopEditing);
+      }
+    });
     loadStatus();
     setInterval(loadStatus, 1000);
   </script>

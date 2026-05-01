@@ -92,6 +92,7 @@ python model\train_seat_model.py --dataset model\dataset --out embedded\firmware
 - 2026-05-01：表单解析增强版本已构建并烧录到 `COM13`，写入和 Hash 校验通过；固件大小 `0x10ebc0`。
 - 2026-05-01：修复本地 HTTP 接口数量不足导致 `POST /cloud` 未注册、保存云配置返回 method invalid 的问题。
 - 2026-05-01：`POST /cloud` 注册修复版本已构建并烧录到 `COM13`，写入和 Hash 校验通过；固件大小 `0x10eed0`。
+- 2026-05-01：云端网页计时输入框编辑时不再被 1 秒状态刷新覆盖，避免删除数字后自动补回旧值。
 
 ## 待核对
 
