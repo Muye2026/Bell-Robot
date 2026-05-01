@@ -610,7 +610,19 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
   char secondsText[4] = {};
   snprintf(minutesText, sizeof(minutesText), "%02lu", static_cast<unsigned long>(displayMinutes));
   snprintf(secondsText, sizeof(secondsText), "%02lu", static_cast<unsigned long>(displaySeconds));
-  const char *displayState = displayStateLabel(timerContext.state, isPresent);
+  const bool awayState = timerContext.state == TimerState::AwayGrace ||
+                         timerContext.state == TimerState::AwayWarning;
+
+  char displayState[12] = {};
+  if (awayState) {
+    const char *pausedText = (nowMs / 1000) % 2 == 0 ? "PAUSED" : "PAUSED .";
+    snprintf(displayState, sizeof(displayState), "%s", pausedText);
+  } else if (timerContext.state == TimerState::Alerting && (nowMs / 500) % 2 != 0) {
+    displayState[0] = '\0';
+  } else {
+    snprintf(displayState, sizeof(displayState), "%s", displayStateLabel(timerContext.state, isPresent));
+  }
+
   const uint32_t probabilityPercent = std::min<uint32_t>(
       100,
       static_cast<uint32_t>(diag.modelProbability * 100.0f + 0.5f));
