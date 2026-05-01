@@ -151,11 +151,25 @@ void Ssd1306Spi::textScaledf(int x, int y, int scale, const char *format, ...) {
 }
 
 void Ssd1306Spi::flush() {
-  for (uint8_t page = 0; page < 8; ++page) {
+  uint8_t physicalBuffer[OLED_PHYSICAL_WIDTH * OLED_PHYSICAL_HEIGHT / 8] = {};
+  for (int y = 0; y < OLED_HEIGHT; ++y) {
+    for (int x = 0; x < OLED_WIDTH; ++x) {
+      if (!getPixel(x, y)) {
+        continue;
+      }
+      if (OLED_ROTATE_CCW_90) {
+        setPhysicalPixel(physicalBuffer, y, OLED_WIDTH - 1 - x);
+      } else {
+        setPhysicalPixel(physicalBuffer, x, y);
+      }
+    }
+  }
+
+  for (uint8_t page = 0; page < OLED_PHYSICAL_HEIGHT / 8; ++page) {
     command(0xb0 + page);
     command(0x00);
     command(0x10);
-    data(&buffer_[page * OLED_WIDTH], OLED_WIDTH);
+    data(&physicalBuffer[page * OLED_PHYSICAL_WIDTH], OLED_PHYSICAL_WIDTH);
   }
 }
 
@@ -213,9 +227,30 @@ void Ssd1306Spi::drawChar(int x, int y, char c, int scale) {
           if (px < 0 || px >= OLED_WIDTH || py < 0 || py >= OLED_HEIGHT) {
             continue;
           }
-          buffer_[(py / 8) * OLED_WIDTH + px] |= (1 << (py % 8));
+          setPixel(px, py);
         }
       }
     }
   }
+}
+
+bool Ssd1306Spi::getPixel(int x, int y) const {
+  if (x < 0 || x >= OLED_WIDTH || y < 0 || y >= OLED_HEIGHT) {
+    return false;
+  }
+  return (buffer_[(y / 8) * OLED_WIDTH + x] & (1 << (y % 8))) != 0;
+}
+
+void Ssd1306Spi::setPixel(int x, int y) {
+  if (x < 0 || x >= OLED_WIDTH || y < 0 || y >= OLED_HEIGHT) {
+    return;
+  }
+  buffer_[(y / 8) * OLED_WIDTH + x] |= (1 << (y % 8));
+}
+
+void Ssd1306Spi::setPhysicalPixel(uint8_t *physicalBuffer, int x, int y) const {
+  if (physicalBuffer == nullptr || x < 0 || x >= OLED_PHYSICAL_WIDTH || y < 0 || y >= OLED_PHYSICAL_HEIGHT) {
+    return;
+  }
+  physicalBuffer[(y / 8) * OLED_PHYSICAL_WIDTH + x] |= (1 << (y % 8));
 }

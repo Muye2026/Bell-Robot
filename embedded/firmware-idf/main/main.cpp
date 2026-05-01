@@ -26,7 +26,8 @@
 namespace {
 constexpr char kTag[] = "bell_robot";
 constexpr uint32_t kFeatureCount = 64;
-constexpr int kLargeTimerScale = 3;
+constexpr int kTimerDigitScale = 4;
+constexpr int kAlertScale = 2;
 
 enum class TimerState {
   Idle,
@@ -46,6 +47,9 @@ struct PresenceDiagnostics {
   bool present = false;
   bool calibrated = false;
   bool modelReady = false;
+  bool rawPresent = false;
+  uint8_t onFrames = 0;
+  uint8_t offFrames = 0;
   float modelProbability = 0.0f;
   uint32_t inferenceMs = 0;
   const char *fallbackReason = "not_sampled";
@@ -101,22 +105,6 @@ const char *displayStateLabel(TimerState state, bool isPresent) {
     return "ALERT";
   }
   return "UNKNOWN";
-}
-
-const char *displayStateHint(TimerState state, bool isPresent) {
-  switch (state) {
-  case TimerState::Idle:
-    return isPresent ? "Timer starting" : "No one in view";
-  case TimerState::Sitting:
-    return "Person at desk";
-  case TimerState::AwayGrace:
-    return "Short leave";
-  case TimerState::AwayWarning:
-    return "Reset soon";
-  case TimerState::Alerting:
-    return "Stand up now";
-  }
-  return "";
 }
 
 void formatTime(uint32_t ms, char *buffer, size_t bufferSize) {
@@ -199,6 +187,9 @@ public:
     const bool rawPresent = sampleCameraPresence();
     updateDebouncedPresence(rawPresent);
     diagnostics_.present = present_;
+    diagnostics_.rawPresent = rawPresent;
+    diagnostics_.onFrames = onFrames_;
+    diagnostics_.offFrames = offFrames_;
     return present_;
   }
 
@@ -238,6 +229,7 @@ private:
   PresenceDiagnostics diagnostics_ = {};
 
   void updateDebouncedPresence(bool rawPresent) {
+    diagnostics_.rawPresent = rawPresent;
     if (rawPresent) {
       onFrames_ = std::min<uint8_t>(onFrames_ + 1, PRESENCE_ON_FRAMES);
       offFrames_ = 0;
@@ -518,36 +510,47 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
   lastDisplayMs = nowMs;
 
   const PresenceDiagnostics diag = presenceDetector.diagnostics();
-  char remaining[8] = {};
-  formatTime(remainingSitMs(nowMs), remaining, sizeof(remaining));
-  const char *timerText = timerContext.state == TimerState::Alerting ? "STAND!" : remaining;
-  const int timerWidth = scaledTextWidth(timerText, kLargeTimerScale);
-  const int timerX = std::max(0, (OLED_WIDTH - timerWidth) / 2);
+  const uint32_t remainingMs = remainingSitMs(nowMs);
+  const uint32_t totalSeconds = (remainingMs + 999) / 1000;
+  const uint32_t displayMinutes = std::min<uint32_t>(totalSeconds / 60, 99);
+  const uint32_t displaySeconds = totalSeconds % 60;
+  char minutesText[4] = {};
+  char secondsText[4] = {};
+  snprintf(minutesText, sizeof(minutesText), "%02lu", static_cast<unsigned long>(displayMinutes));
+  snprintf(secondsText, sizeof(secondsText), "%02lu", static_cast<unsigned long>(displaySeconds));
+  const int minutesX = std::max(0, (OLED_WIDTH - scaledTextWidth(minutesText, kTimerDigitScale)) / 2);
+  const int secondsX = std::max(0, (OLED_WIDTH - scaledTextWidth(secondsText, kTimerDigitScale)) / 2);
   const char *displayState = displayStateLabel(timerContext.state, isPresent);
-  const char *displayHint = displayStateHint(timerContext.state, isPresent);
   const char *detectText = isPresent ? "sit" : "away";
-  const char *modeText = diag.modelReady ? "mdl" : "fbk";
 
   display.clear();
-  display.textf(0, 0, "STATE:%s", displayState);
-  display.textf(0, 1, "%s", displayHint);
-  display.textf(0, 2, "P:%s %s:%02u B:%c",
+  display.textf(0, 0, "%s", displayState);
+  display.textf(0, 1, "%s %02u%%",
                 detectText,
-                modeText,
-                static_cast<unsigned>(diag.modelProbability * 100.0f),
-                isButtonDown() ? 'L' : 'H');
-  display.textScaled(timerX, 28, kLargeTimerScale, timerText);
+                static_cast<unsigned>(diag.modelProbability * 100.0f));
+  display.textf(0, 2, "R%c ON%u/%u",
+                diag.rawPresent ? 'Y' : 'N',
+                diag.onFrames,
+                PRESENCE_ON_FRAMES);
+  if (timerContext.state == TimerState::Alerting) {
+    const char *alertText = "STAND";
+    const int alertX = std::max(0, (OLED_WIDTH - scaledTextWidth(alertText, kAlertScale)) / 2);
+    display.textScaled(alertX, 48, kAlertScale, alertText);
+  } else {
+    display.textScaled(minutesX, 28, kTimerDigitScale, minutesText);
+    display.textScaled(secondsX, 70, kTimerDigitScale, secondsText);
+  }
   if (timerContext.state == TimerState::AwayGrace || timerContext.state == TimerState::AwayWarning) {
     char away[8] = {};
     const uint32_t awayMs = nowMs - timerContext.awayStartMs;
     formatTime(AWAY_RESET_MS - std::min(awayMs, AWAY_RESET_MS), away, sizeof(away));
-    display.textf(0, 7, "Reset in %s", away);
+    display.textf(0, 14, "RST %s", away);
   } else if (timerContext.state == TimerState::Idle && !diag.modelReady) {
-    display.textf(0, 7, "Fallback D:%u B:%u", diag.diff, diag.baseline);
+    display.textf(0, 14, "FB D:%u", diag.diff);
   } else if (timerContext.state == TimerState::Sitting) {
-    display.textf(0, 7, "Prob:%02u%%", static_cast<unsigned>(diag.modelProbability * 100.0f));
+    display.textf(0, 14, "PROB:%02u%%", static_cast<unsigned>(diag.modelProbability * 100.0f));
   } else if (timerContext.state == TimerState::Alerting) {
-    display.textf(0, 7, "Press button");
+    display.textf(0, 14, "PRESS BTN");
   }
   display.flush();
 }
@@ -560,11 +563,15 @@ void logStatus(bool isPresent, uint32_t nowMs) {
 
   const PresenceDiagnostics diag = presenceDetector.diagnostics();
   ESP_LOGI(kTag,
-           "tick state=%s pose=%s model=%c prob=%u diff=%u base=%u btn=%c",
+           "tick state=%s pose=%s raw=%c on=%u off=%u model=%c prob=%u th=%u diff=%u base=%u btn=%c",
            stateLabel(timerContext.state),
            isPresent ? "sit" : "away",
+           diag.rawPresent ? 'Y' : 'N',
+           diag.onFrames,
+           diag.offFrames,
            diag.modelReady ? 'Y' : 'N',
            static_cast<unsigned>(diag.modelProbability * 100.0f),
+           static_cast<unsigned>(MODEL_OCCUPIED_THRESHOLD * 100.0f),
            diag.diff,
            diag.baseline,
            isButtonDown() ? 'L' : 'H');
@@ -620,12 +627,14 @@ esp_err_t sendCapture(httpd_req_t *req) {
 
 esp_err_t sendStatus(httpd_req_t *req) {
   const PresenceDiagnostics diag = presenceDetector.diagnostics();
-  char payload[448] = {};
+  char payload[640] = {};
   snprintf(payload,
            sizeof(payload),
            "{\"state\":\"%s\",\"present\":%s,\"calibrated\":%s,\"score\":%u,"
-           "\"baseline\":%u,\"diff\":%u,\"button\":%s,\"model_ready\":%s,"
-           "\"model_prob\":%.3f,\"model_version\":\"%s\",\"inference_ms\":%lu,"
+           "\"baseline\":%u,\"diff\":%u,\"button\":%s,\"raw_present\":%s,"
+           "\"on_frames\":%u,\"off_frames\":%u,\"on_required\":%u,"
+           "\"model_ready\":%s,\"model_prob\":%.3f,\"model_threshold\":%.2f,"
+           "\"model_version\":\"%s\",\"inference_ms\":%lu,"
            "\"fallback_reason\":\"%s\"}",
            stateLabel(timerContext.state),
            diag.present ? "true" : "false",
@@ -634,8 +643,13 @@ esp_err_t sendStatus(httpd_req_t *req) {
            diag.baseline,
            diag.diff,
            isButtonDown() ? "true" : "false",
+           diag.rawPresent ? "true" : "false",
+           diag.onFrames,
+           diag.offFrames,
+           PRESENCE_ON_FRAMES,
            diag.modelReady ? "true" : "false",
            static_cast<double>(diag.modelProbability),
+           static_cast<double>(MODEL_OCCUPIED_THRESHOLD),
            seatModel.version(),
            static_cast<unsigned long>(diag.inferenceMs),
            diag.fallbackReason == nullptr ? "" : diag.fallbackReason);
@@ -793,8 +807,8 @@ extern "C" void app_main(void) {
   buzzerBegin();
   setupButton();
   display.begin();
-  display.text(0, 0, "Bell Robot");
-  display.text(0, 1, "Starting...");
+  display.text(0, 0, "BELL");
+  display.text(0, 1, "START");
   display.flush();
 
   const bool cameraOk = presenceDetector.begin();

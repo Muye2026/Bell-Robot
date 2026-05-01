@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Iterable
 
 
-ROI_X_PERCENT = 20
-ROI_Y_PERCENT = 25
-ROI_W_PERCENT = 60
-ROI_H_PERCENT = 55
+ROI_X_PERCENT = 18
+ROI_Y_PERCENT = 10
+ROI_W_PERCENT = 64
+ROI_H_PERCENT = 72
 FEATURE_W = 8
 FEATURE_H = 8
 SCALE = 4096
@@ -131,17 +131,35 @@ def sigmoid(value: float) -> float:
     return z / (1.0 + z)
 
 
-def train(samples: list[tuple[list[int], int, Path]], epochs: int, lr: float, l2: float) -> tuple[list[float], float]:
+def class_weights(samples: list[tuple[list[int], int, Path]], enabled: bool) -> list[float]:
+    if not enabled:
+        return [1.0] * len(samples)
+
+    counts = {0: 0, 1: 0}
+    for _, label, _ in samples:
+        counts[label] += 1
+    total = float(len(samples))
+    return [total / (2.0 * counts[label]) for _, label, _ in samples]
+
+
+def train(
+    samples: list[tuple[list[int], int, Path]],
+    epochs: int,
+    lr: float,
+    l2: float,
+    balance_classes: bool,
+) -> tuple[list[float], float]:
     weights = [0.0] * (FEATURE_W * FEATURE_H)
     bias = 0.0
     n = float(len(samples))
+    sample_weights = class_weights(samples, balance_classes)
 
     for _ in range(epochs):
         grad_w = [0.0] * len(weights)
         grad_b = 0.0
-        for features, label, _ in samples:
+        for (features, label, _), sample_weight in zip(samples, sample_weights):
             logit = bias + sum(w * x for w, x in zip(weights, features)) / 128.0
-            err = sigmoid(logit) - label
+            err = (sigmoid(logit) - label) * sample_weight
             for i, x in enumerate(features):
                 grad_w[i] += err * x / 128.0
             grad_b += err
@@ -213,10 +231,11 @@ def main() -> None:
     parser.add_argument("--l2", type=float, default=0.0005)
     parser.add_argument("--threshold", type=float, default=0.65)
     parser.add_argument("--version", type=parse_version, default=parse_version("1.0"))
+    parser.add_argument("--balance-classes", action="store_true")
     args = parser.parse_args()
 
     samples = list_samples(args.dataset)
-    weights, bias = train(samples, args.epochs, args.lr, args.l2)
+    weights, bias = train(samples, args.epochs, args.lr, args.l2, args.balance_classes)
     q_weights, q_bias = quantize(weights, bias)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     write_header(args.out, q_weights, q_bias, args.version)

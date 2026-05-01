@@ -4,12 +4,17 @@
 
 // Core timing policy.
 static constexpr uint32_t SIT_TARGET_MS = 45UL * 60UL * 1000UL;
-static constexpr uint32_t AWAY_GRACE_MS = 5UL * 1000UL;
-static constexpr uint32_t AWAY_RESET_MS = 10UL * 1000UL;
+static constexpr uint32_t AWAY_GRACE_MS = 10UL * 1000UL;
+static constexpr uint32_t AWAY_RESET_MS = 15UL * 1000UL;
 
 // Display: SPI SSD1306 128x64 module with pins SCK/MOSI/RES/DC/CS.
-static constexpr int OLED_WIDTH = 128;
-static constexpr int OLED_HEIGHT = 64;
+// The physical panel is mounted in portrait; render a 64x128 logical canvas
+// and rotate it 90 degrees counter-clockwise into the SSD1306 page buffer.
+static constexpr int OLED_PHYSICAL_WIDTH = 128;
+static constexpr int OLED_PHYSICAL_HEIGHT = 64;
+static constexpr int OLED_WIDTH = 64;
+static constexpr int OLED_HEIGHT = 128;
+static constexpr bool OLED_ROTATE_CCW_90 = true;
 static constexpr int PIN_OLED_MOSI = 3;
 static constexpr int PIN_OLED_CLK = 14;
 static constexpr int PIN_OLED_DC = 41;
@@ -41,7 +46,7 @@ static constexpr uint8_t PRESENCE_ON_FRAMES = 6;
 static constexpr uint8_t PRESENCE_OFF_FRAMES = 5;
 static constexpr uint8_t PRESENCE_CALIBRATION_FRAMES = 8;
 static constexpr uint16_t ROI_DIFF_THRESHOLD = 35;
-static constexpr float MODEL_OCCUPIED_THRESHOLD = 0.65f;
+static constexpr float MODEL_OCCUPIED_THRESHOLD = 0.50f;
 
 // ROI in percentage of frame dimensions.
 // The default camera placement is on a monitor or desktop, so bias the region

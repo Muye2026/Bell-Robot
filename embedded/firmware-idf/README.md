@@ -51,7 +51,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1
 5. 运行：
 
 ```powershell
-python model\train_seat_model.py --dataset model\dataset --out main\seat_model_data.h
+python model\train_seat_model.py --dataset model\dataset --out main\seat_model_data.h --balance-classes
 ```
 
 6. 重新 `idf.py build flash`。
@@ -59,6 +59,10 @@ python model\train_seat_model.py --dataset model\dataset --out main\seat_model_d
 第一版模型是本地 int8 二分类器，输入为画面中部偏上的 `8x8` 归一化灰度特征，用于区分桌前坐姿和离开。特征会先减去 ROI 全局平均亮度，再做有限幅度缩放，降低整体光照变化影响。后续若迁入完整 TFLite Micro 坐姿/人体模型，可复用当前 `SeatModel` 接口，不需要重写计时和 Web 接口。
 
 如果当前还没有直接从 `/label` 导出的样本，可以先用 `model/prepare_seed_dataset.py` 从手机预览截图中提取真实预览画面，生成第一版种子数据。当前仓库里的第一版非占位模型就是用这条链路启动的：核心正样本来自你的真实桌前坐姿截图，外加 `MPIIGaze` 官方示例图里的上半身桌前样例；负样本来自同视角合成 `absent` 和 `Edinburgh office monitoring video dataset` 的空办公室样例帧。它的作用是先把固件从 `model_untrained` 切到 `model_ready=true`，不是最终准确率版本。
+
+当前模型 `1.2` 已补入真实工位无人/有人截图，以及 4 张真实坐下办公漏判截图。补充正样本后训练使用 `--balance-classes`，优先在提升坐姿召回的同时控制空工位误判。训练脚本的 ROI 已与固件侧 `buildModelFeatures()` 对齐，避免离线训练区域和上板推理区域不一致。为排查现场坐下仍不倒计时问题，当前触发阈值临时降到 `0.50`，同时在 OLED、串口和 `/status` 暴露原始单帧结果、连续帧计数和阈值。
+
+OLED 当前按逆时针 90 度软件旋转输出，逻辑画布为 `64x128` 竖屏；倒计时拆成分钟/秒两块 4 倍大字显示，倒计时区域只保留数字，顶部压缩显示状态、识别概率和连续帧诊断。中途离场策略为离开 10 秒提示、离开 15 秒重置本轮计时。
 
 ## 本地脚本
 
