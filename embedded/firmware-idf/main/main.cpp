@@ -11,7 +11,9 @@
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -46,7 +48,8 @@ constexpr char kCloudPassKey[] = "sta_pass";
 constexpr char kCloudServerKey[] = "server_url";
 constexpr char kCloudDeviceIdKey[] = "device_id";
 constexpr char kCloudTokenKey[] = "token";
-constexpr char kDefaultDeviceId[] = "bell-robot-1";
+constexpr char kLegacyDefaultDeviceId[] = "bell-robot-1";
+constexpr char kDefaultCloudServerUrl[] = "http://43.134.30.245:8080";
 constexpr uint32_t kStaConnectTimeoutMs = 15000;
 constexpr uint32_t kCloudPollIntervalMs = 1000;
 constexpr uint32_t kCloudHttpTimeoutMs = 8000;
@@ -212,6 +215,34 @@ bool validServerUrl(const char *url) {
   return startsWith(url, "http://") || startsWith(url, "https://");
 }
 
+void buildAutoDeviceId(char *out, size_t outSize) {
+  if (out == nullptr || outSize == 0) {
+    return;
+  }
+  uint8_t mac[6] = {};
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+    esp_fill_random(mac, sizeof(mac));
+  }
+  snprintf(out,
+           outSize,
+           "bell-robot-%02x%02x%02x",
+           mac[3],
+           mac[4],
+           mac[5]);
+}
+
+void generateDeviceToken(char *out, size_t outSize) {
+  if (out == nullptr || outSize < 33) {
+    return;
+  }
+  uint8_t bytes[16] = {};
+  esp_fill_random(bytes, sizeof(bytes));
+  for (size_t i = 0; i < sizeof(bytes); ++i) {
+    snprintf(out + i * 2, outSize - i * 2, "%02x", bytes[i]);
+  }
+  out[32] = '\0';
+}
+
 bool cloudSettingsComplete() {
   return cloudSettings.ssid[0] != '\0' &&
          cloudSettings.serverUrl[0] != '\0' &&
@@ -283,22 +314,47 @@ void readNvsString(nvs_handle_t handle, const char *key, char *dest, size_t dest
 
 void loadCloudSettings() {
   cloudSettings = CloudSettings{};
-  safeCopy(cloudSettings.deviceId, sizeof(cloudSettings.deviceId), kDefaultDeviceId);
+  char autoDeviceId[48] = {};
+  buildAutoDeviceId(autoDeviceId, sizeof(autoDeviceId));
+  safeCopy(cloudSettings.deviceId, sizeof(cloudSettings.deviceId), autoDeviceId);
+  safeCopy(cloudSettings.serverUrl, sizeof(cloudSettings.serverUrl), kDefaultCloudServerUrl);
 
   nvs_handle_t handle = 0;
-  const esp_err_t openErr = nvs_open(kCloudNvsNamespace, NVS_READONLY, &handle);
+  const esp_err_t openErr = nvs_open(kCloudNvsNamespace, NVS_READWRITE, &handle);
   if (openErr == ESP_OK) {
     readNvsString(handle, kCloudSsidKey, cloudSettings.ssid, sizeof(cloudSettings.ssid));
     readNvsString(handle, kCloudPassKey, cloudSettings.password, sizeof(cloudSettings.password));
     readNvsString(handle, kCloudServerKey, cloudSettings.serverUrl, sizeof(cloudSettings.serverUrl));
     readNvsString(handle, kCloudDeviceIdKey, cloudSettings.deviceId, sizeof(cloudSettings.deviceId));
     readNvsString(handle, kCloudTokenKey, cloudSettings.token, sizeof(cloudSettings.token));
+
+    bool changed = false;
+    if (cloudSettings.deviceId[0] == '\0' ||
+        strcmp(cloudSettings.deviceId, kLegacyDefaultDeviceId) == 0) {
+      safeCopy(cloudSettings.deviceId, sizeof(cloudSettings.deviceId), autoDeviceId);
+      nvs_set_str(handle, kCloudDeviceIdKey, cloudSettings.deviceId);
+      changed = true;
+    }
+    if (cloudSettings.token[0] == '\0') {
+      generateDeviceToken(cloudSettings.token, sizeof(cloudSettings.token));
+      nvs_set_str(handle, kCloudTokenKey, cloudSettings.token);
+      changed = true;
+    }
+    if (cloudSettings.serverUrl[0] == '\0') {
+      safeCopy(cloudSettings.serverUrl, sizeof(cloudSettings.serverUrl), kDefaultCloudServerUrl);
+      nvs_set_str(handle, kCloudServerKey, cloudSettings.serverUrl);
+      changed = true;
+    }
+    if (changed) {
+      nvs_commit(handle);
+    }
     nvs_close(handle);
+  } else {
+    if (cloudSettings.token[0] == '\0') {
+      generateDeviceToken(cloudSettings.token, sizeof(cloudSettings.token));
+    }
   }
 
-  if (cloudSettings.deviceId[0] == '\0') {
-    safeCopy(cloudSettings.deviceId, sizeof(cloudSettings.deviceId), kDefaultDeviceId);
-  }
   ESP_LOGI(kTag,
            "cloud settings: ssid=%s server=%s device=%s token=%s",
            cloudSettings.ssid[0] == '\0' ? "(none)" : cloudSettings.ssid,
@@ -355,13 +411,12 @@ esp_err_t forgetCloudSettings() {
   nvs_erase_key(handle, kCloudSsidKey);
   nvs_erase_key(handle, kCloudPassKey);
   nvs_erase_key(handle, kCloudServerKey);
-  nvs_erase_key(handle, kCloudDeviceIdKey);
-  nvs_erase_key(handle, kCloudTokenKey);
   err = nvs_commit(handle);
   nvs_close(handle);
   if (err == ESP_OK) {
-    cloudSettings = CloudSettings{};
-    safeCopy(cloudSettings.deviceId, sizeof(cloudSettings.deviceId), kDefaultDeviceId);
+    cloudSettings.ssid[0] = '\0';
+    cloudSettings.password[0] = '\0';
+    safeCopy(cloudSettings.serverUrl, sizeof(cloudSettings.serverUrl), kDefaultCloudServerUrl);
   }
   return err;
 }
@@ -868,22 +923,21 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
       "<label for='away'>Away tolerance minutes</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
       "<button type='submit'>Save timer</button><span id='msg'></span></form>"
       "<form class='settings' onsubmit='saveCloud(event)'>"
-      "<h3>Cloud remote access</h3><p class='hint'>After saving, the device reboots and tries router Wi-Fi. If it fails, Bell-Robot AP returns.</p>"
+      "<h3>Cloud remote access</h3><p class='hint'>Only Wi-Fi is required. Device ID and token are generated automatically.</p>"
       "<label for='ssid'>2.4G Wi-Fi SSID</label><input id='ssid' name='ssid' maxlength='32' required>"
       "<label for='pass'>Wi-Fi password</label><input id='pass' name='password' type='password' maxlength='64'>"
       "<label for='server'>Server URL</label><input id='server' name='server_url' placeholder='https://your-domain.example' maxlength='159' required>"
-      "<label for='device'>Device ID</label><input id='device' name='device_id' maxlength='47' required>"
-      "<label for='token'>Device token</label><input id='token' name='token' type='password' maxlength='95' placeholder='leave blank to keep current token'>"
+      "<p class='hint'>Device ID: <span id='device'>-</span></p>"
       "<button type='submit'>Save cloud</button><button type='button' onclick='forgetCloud()'>Forget cloud</button><span id='cloudMsg'></span></form>"
       "<p><a href='/label?class=absent'>Save absent sample</a><a href='/label?class=seated'>Save seated sample</a></p>"
       "<script>function refreshFrame(){document.getElementById('frame').src='/capture?ts='+Date.now()}"
       "async function loadSettings(){let r=await fetch('/settings');let s=await r.json();document.getElementById('sit').value=s.sit_minutes;document.getElementById('away').value=s.away_minutes}"
-      "async function loadCloud(){let r=await fetch('/cloud');let s=await r.json();document.getElementById('ssid').value=s.ssid||'';document.getElementById('server').value=s.server_url||'';document.getElementById('device').value=s.device_id||'bell-robot-1'}"
+      "async function loadCloud(){let r=await fetch('/cloud');let s=await r.json();document.getElementById('ssid').value=s.ssid||'';document.getElementById('server').value=s.server_url||'';document.getElementById('device').textContent=s.device_id||'-'}"
       "async function saveSettings(e){e.preventDefault();let sit=document.getElementById('sit'),away=document.getElementById('away'),msg=document.getElementById('msg');msg.textContent='Saving...';"
       "let b='sit_minutes='+encodeURIComponent(sit.value)+'&away_minutes='+encodeURIComponent(away.value);"
       "let r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});"
       "msg.textContent=r.ok?'Saved':'Save failed'}"
-      "async function saveCloud(e){e.preventDefault();let ids=['ssid','pass','server','device','token'],p=new URLSearchParams(),msg=document.getElementById('cloudMsg');ids.forEach(id=>p.append(document.getElementById(id).name,document.getElementById(id).value));msg.textContent='Saving...';let r=await fetch('/cloud',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});let t=await r.text();msg.textContent=r.ok?'Saved, rebooting...':('Save failed: '+t)}"
+      "async function saveCloud(e){e.preventDefault();let ids=['ssid','pass','server'],p=new URLSearchParams(),msg=document.getElementById('cloudMsg');ids.forEach(id=>p.append(document.getElementById(id).name,document.getElementById(id).value));msg.textContent='Saving...';let r=await fetch('/cloud',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});let t=await r.text();msg.textContent=r.ok?'Saved, rebooting...':('Save failed: '+t)}"
       "async function forgetCloud(){let msg=document.getElementById('cloudMsg');msg.textContent='Clearing...';let r=await fetch('/cloud/forget',{method:'POST'});let t=await r.text();msg.textContent=r.ok?'Cleared, rebooting...':('Clear failed: '+t)}"
       "setInterval(refreshFrame,1000);loadSettings();loadCloud()</script></main></body></html>";
   httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -944,7 +998,7 @@ void buildStatusPayload(char *payload, size_t payloadSize) {
            "\"model_ready\":%s,\"model_prob\":%.3f,\"model_threshold\":%.2f,"
            "\"model_version\":\"%s\",\"inference_ms\":%lu,"
            "\"fallback_reason\":\"%s\",\"sit_minutes\":%lu,\"away_minutes\":%lu,"
-           "\"wifi_mode\":\"%s\",\"wifi_connected\":%s,"
+           "\"device_id\":\"%s\",\"wifi_mode\":\"%s\",\"wifi_connected\":%s,"
            "\"cloud_configured\":%s,\"cloud_last_poll_ms\":%lu,"
            "\"cloud_last_success_ms\":%lu,\"cloud_last_error\":\"%s\"}",
            stateLabel(timerContext.state),
@@ -966,6 +1020,7 @@ void buildStatusPayload(char *payload, size_t payloadSize) {
            diag.fallbackReason == nullptr ? "" : diag.fallbackReason,
            static_cast<unsigned long>(minutesFromMs(timerSettings.sitTargetMs)),
            static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)),
+           cloudSettings.deviceId,
            wifiStartedAsSta ? "sta" : "ap",
            (wifiEventGroup != nullptr &&
             (xEventGroupGetBits(wifiEventGroup) & kWifiConnectedBit)) ? "true" : "false",
@@ -1159,12 +1214,6 @@ esp_err_t handleCloudPost(httpd_req_t *req) {
   }
   if (readFormValue(body, "server_url", value, sizeof(value))) {
     safeCopy(next.serverUrl, sizeof(next.serverUrl), value);
-  }
-  if (readFormValue(body, "device_id", value, sizeof(value))) {
-    safeCopy(next.deviceId, sizeof(next.deviceId), value);
-  }
-  if (readFormValue(body, "token", value, sizeof(value)) && value[0] != '\0') {
-    safeCopy(next.token, sizeof(next.token), value);
   }
 
   const esp_err_t err = saveCloudSettings(next);
@@ -1620,8 +1669,12 @@ bool captureJpegForCloud(const char *commandId) {
     return false;
   }
 
-  char path[96] = {};
-  snprintf(path, sizeof(path), "device/capture?command_id=%s", commandId == nullptr ? "" : commandId);
+  char path[160] = {};
+  snprintf(path,
+           sizeof(path),
+           "device/capture?device_id=%s&command_id=%s",
+           cloudSettings.deviceId,
+           commandId == nullptr ? "" : commandId);
   char response[256] = {};
   const esp_err_t err = cloudPost(path, "image/jpeg", jpgBuffer, jpgLength, response, sizeof(response));
   if (converted) {

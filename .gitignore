@@ -28,3 +28,4 @@ Thumbs.db
 cloud-relay/node_modules/
 cloud-relay/.env
 cloud-relay/.env.*
+cloud-relay/data/
