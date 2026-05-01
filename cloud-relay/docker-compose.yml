@@ -1,0 +1,12 @@
+services:
+  bell-robot-relay:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      ADMIN_USER: "admin"
+      ADMIN_PASS: "69696966"
+      DEVICE_ID: "bell-robot-1"
+      DEVICE_TOKEN: "change-this-device-token"

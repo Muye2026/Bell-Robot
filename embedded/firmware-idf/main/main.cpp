@@ -6,13 +6,17 @@
 #include "app_config.h"
 #include "esp_camera.h"
 #include "esp_check.h"
+#include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "img_converters.h"
 #include "lwip/ip4_addr.h"
@@ -36,6 +40,18 @@ constexpr uint32_t kAwayMaxMinutes = 5;
 constexpr char kTimerNvsNamespace[] = "timer";
 constexpr char kSitMinutesKey[] = "sit_min";
 constexpr char kAwayMinutesKey[] = "away_min";
+constexpr char kCloudNvsNamespace[] = "cloud";
+constexpr char kCloudSsidKey[] = "sta_ssid";
+constexpr char kCloudPassKey[] = "sta_pass";
+constexpr char kCloudServerKey[] = "server_url";
+constexpr char kCloudDeviceIdKey[] = "device_id";
+constexpr char kCloudTokenKey[] = "token";
+constexpr char kDefaultDeviceId[] = "bell-robot-1";
+constexpr uint32_t kStaConnectTimeoutMs = 15000;
+constexpr uint32_t kCloudPollIntervalMs = 1000;
+constexpr uint32_t kCloudHttpTimeoutMs = 8000;
+constexpr size_t kMaxCloudResponseBytes = 2048;
+constexpr EventBits_t kWifiConnectedBit = BIT0;
 
 enum class TimerState {
   Idle,
@@ -54,6 +70,14 @@ struct TimerContext {
 struct TimerSettings {
   uint32_t sitTargetMs = DEFAULT_SIT_TARGET_MS;
   uint32_t awayResetMs = DEFAULT_AWAY_RESET_MS;
+};
+
+struct CloudSettings {
+  char ssid[33] = {};
+  char password[65] = {};
+  char serverUrl[160] = {};
+  char deviceId[48] = {};
+  char token[96] = {};
 };
 
 struct PresenceDiagnostics {
@@ -75,16 +99,26 @@ Ssd1306Spi display;
 SeatModel seatModel;
 TimerContext timerContext;
 TimerSettings timerSettings;
+CloudSettings cloudSettings;
 httpd_handle_t httpServer = nullptr;
+EventGroupHandle_t wifiEventGroup = nullptr;
+esp_netif_t *apNetif = nullptr;
+esp_netif_t *staNetif = nullptr;
 
 uint32_t lastDisplayMs = 0;
 uint32_t lastStatusLogMs = 0;
 uint32_t lastButtonChangeMs = 0;
+uint32_t cloudLastPollMs = 0;
+uint32_t cloudLastSuccessMs = 0;
+uint32_t rebootAtMs = 0;
 bool lastButtonLevel = true;
 bool buttonPressedEvent = false;
 bool buttonResetConsumed = false;
 bool buzzerActive = false;
+bool wifiStartedAsSta = false;
+bool wifiStartedAsAp = false;
 uint32_t sampleCounter = 0;
+char cloudLastError[64] = "not_started";
 
 uint32_t millis32() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -159,6 +193,37 @@ void applyTimerMinutes(uint32_t sitMinutes, uint32_t awayMinutes) {
   timerSettings.awayResetMs = msFromMinutes(awayMinutes);
 }
 
+void safeCopy(char *dest, size_t destSize, const char *src) {
+  if (dest == nullptr || destSize == 0) {
+    return;
+  }
+  dest[0] = '\0';
+  if (src != nullptr) {
+    strlcpy(dest, src, destSize);
+  }
+}
+
+bool startsWith(const char *value, const char *prefix) {
+  return value != nullptr && prefix != nullptr &&
+         strncmp(value, prefix, strlen(prefix)) == 0;
+}
+
+bool validServerUrl(const char *url) {
+  return startsWith(url, "http://") || startsWith(url, "https://");
+}
+
+bool cloudSettingsComplete() {
+  return cloudSettings.ssid[0] != '\0' &&
+         cloudSettings.serverUrl[0] != '\0' &&
+         cloudSettings.deviceId[0] != '\0' &&
+         cloudSettings.token[0] != '\0' &&
+         validServerUrl(cloudSettings.serverUrl);
+}
+
+void setCloudError(const char *message) {
+  safeCopy(cloudLastError, sizeof(cloudLastError), message == nullptr ? "" : message);
+}
+
 void loadTimerSettings() {
   uint32_t sitMinutes = minutesFromMs(DEFAULT_SIT_TARGET_MS);
   uint32_t awayMinutes = minutesFromMs(DEFAULT_AWAY_RESET_MS);
@@ -201,6 +266,102 @@ esp_err_t saveTimerSettings(uint32_t sitMinutes, uint32_t awayMinutes) {
   nvs_close(handle);
   if (err == ESP_OK) {
     applyTimerMinutes(sitMinutes, awayMinutes);
+  }
+  return err;
+}
+
+void readNvsString(nvs_handle_t handle, const char *key, char *dest, size_t destSize) {
+  if (dest == nullptr || destSize == 0) {
+    return;
+  }
+  dest[0] = '\0';
+  size_t length = destSize;
+  if (nvs_get_str(handle, key, dest, &length) != ESP_OK) {
+    dest[0] = '\0';
+  }
+}
+
+void loadCloudSettings() {
+  cloudSettings = CloudSettings{};
+  safeCopy(cloudSettings.deviceId, sizeof(cloudSettings.deviceId), kDefaultDeviceId);
+
+  nvs_handle_t handle = 0;
+  const esp_err_t openErr = nvs_open(kCloudNvsNamespace, NVS_READONLY, &handle);
+  if (openErr == ESP_OK) {
+    readNvsString(handle, kCloudSsidKey, cloudSettings.ssid, sizeof(cloudSettings.ssid));
+    readNvsString(handle, kCloudPassKey, cloudSettings.password, sizeof(cloudSettings.password));
+    readNvsString(handle, kCloudServerKey, cloudSettings.serverUrl, sizeof(cloudSettings.serverUrl));
+    readNvsString(handle, kCloudDeviceIdKey, cloudSettings.deviceId, sizeof(cloudSettings.deviceId));
+    readNvsString(handle, kCloudTokenKey, cloudSettings.token, sizeof(cloudSettings.token));
+    nvs_close(handle);
+  }
+
+  if (cloudSettings.deviceId[0] == '\0') {
+    safeCopy(cloudSettings.deviceId, sizeof(cloudSettings.deviceId), kDefaultDeviceId);
+  }
+  ESP_LOGI(kTag,
+           "cloud settings: ssid=%s server=%s device=%s token=%s",
+           cloudSettings.ssid[0] == '\0' ? "(none)" : cloudSettings.ssid,
+           cloudSettings.serverUrl[0] == '\0' ? "(none)" : cloudSettings.serverUrl,
+           cloudSettings.deviceId,
+           cloudSettings.token[0] == '\0' ? "missing" : "set");
+}
+
+esp_err_t saveCloudSettings(const CloudSettings &settings) {
+  if (settings.ssid[0] == '\0' ||
+      settings.serverUrl[0] == '\0' ||
+      settings.deviceId[0] == '\0' ||
+      settings.token[0] == '\0' ||
+      !validServerUrl(settings.serverUrl)) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  nvs_handle_t handle = 0;
+  esp_err_t err = nvs_open(kCloudNvsNamespace, NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    return err;
+  }
+  if (err == ESP_OK) {
+    err = nvs_set_str(handle, kCloudSsidKey, settings.ssid);
+  }
+  if (err == ESP_OK) {
+    err = nvs_set_str(handle, kCloudPassKey, settings.password);
+  }
+  if (err == ESP_OK) {
+    err = nvs_set_str(handle, kCloudServerKey, settings.serverUrl);
+  }
+  if (err == ESP_OK) {
+    err = nvs_set_str(handle, kCloudDeviceIdKey, settings.deviceId);
+  }
+  if (err == ESP_OK) {
+    err = nvs_set_str(handle, kCloudTokenKey, settings.token);
+  }
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  if (err == ESP_OK) {
+    cloudSettings = settings;
+  }
+  return err;
+}
+
+esp_err_t forgetCloudSettings() {
+  nvs_handle_t handle = 0;
+  esp_err_t err = nvs_open(kCloudNvsNamespace, NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    return err;
+  }
+  nvs_erase_key(handle, kCloudSsidKey);
+  nvs_erase_key(handle, kCloudPassKey);
+  nvs_erase_key(handle, kCloudServerKey);
+  nvs_erase_key(handle, kCloudDeviceIdKey);
+  nvs_erase_key(handle, kCloudTokenKey);
+  err = nvs_commit(handle);
+  nvs_close(handle);
+  if (err == ESP_OK) {
+    cloudSettings = CloudSettings{};
+    safeCopy(cloudSettings.deviceId, sizeof(cloudSettings.deviceId), kDefaultDeviceId);
   }
   return err;
 }
@@ -664,7 +825,7 @@ void logStatus(bool isPresent, uint32_t nowMs) {
            static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)));
 }
 
-esp_err_t sendIndex(httpd_req_t *req) {
+[[maybe_unused]] esp_err_t sendIndex(httpd_req_t *req) {
   static constexpr char html[] =
       "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
       "<title>Bell Robot Camera</title><style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}"
@@ -687,6 +848,44 @@ esp_err_t sendIndex(httpd_req_t *req) {
       "let r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});"
       "msg.textContent=r.ok?'Saved':'Save failed'}"
       "setInterval(refreshFrame,1000);loadSettings()</script></main></body></html>";
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t sendIndexCloud(httpd_req_t *req) {
+  static constexpr char html[] =
+      "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>Bell Robot Camera</title><style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}"
+      "main{max-width:760px;margin:20px auto;padding:0 14px}img{width:100%;height:auto;background:#222}"
+      "button,a,input{font-size:18px}button,a{padding:10px 14px;margin:6px 6px 6px 0;display:inline-block}"
+      "a{color:#8cc8ff}.settings{margin:16px 0;padding:12px;border:1px solid #333;background:#181818}"
+      "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
+      ".hint{color:#aaa;font-size:14px}#msg,#cloudMsg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
+      "<h2>Bell Robot Camera</h2><img id='frame' src='/capture?ts=0'>"
+      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a></p>"
+      "<form class='settings' onsubmit='saveSettings(event)'>"
+      "<label for='sit'>Timer minutes</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
+      "<label for='away'>Away tolerance minutes</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
+      "<button type='submit'>Save timer</button><span id='msg'></span></form>"
+      "<form class='settings' onsubmit='saveCloud(event)'>"
+      "<h3>Cloud remote access</h3><p class='hint'>After saving, the device reboots and tries router Wi-Fi. If it fails, Bell-Robot AP returns.</p>"
+      "<label for='ssid'>2.4G Wi-Fi SSID</label><input id='ssid' name='ssid' maxlength='32' required>"
+      "<label for='pass'>Wi-Fi password</label><input id='pass' name='password' type='password' maxlength='64'>"
+      "<label for='server'>Server URL</label><input id='server' name='server_url' placeholder='https://your-domain.example' maxlength='159' required>"
+      "<label for='device'>Device ID</label><input id='device' name='device_id' maxlength='47' required>"
+      "<label for='token'>Device token</label><input id='token' name='token' type='password' maxlength='95' placeholder='leave blank to keep current token'>"
+      "<button type='submit'>Save cloud</button><button type='button' onclick='forgetCloud()'>Forget cloud</button><span id='cloudMsg'></span></form>"
+      "<p><a href='/label?class=absent'>Save absent sample</a><a href='/label?class=seated'>Save seated sample</a></p>"
+      "<script>function refreshFrame(){document.getElementById('frame').src='/capture?ts='+Date.now()}"
+      "async function loadSettings(){let r=await fetch('/settings');let s=await r.json();document.getElementById('sit').value=s.sit_minutes;document.getElementById('away').value=s.away_minutes}"
+      "async function loadCloud(){let r=await fetch('/cloud');let s=await r.json();document.getElementById('ssid').value=s.ssid||'';document.getElementById('server').value=s.server_url||'';document.getElementById('device').value=s.device_id||'bell-robot-1'}"
+      "async function saveSettings(e){e.preventDefault();let sit=document.getElementById('sit'),away=document.getElementById('away'),msg=document.getElementById('msg');msg.textContent='Saving...';"
+      "let b='sit_minutes='+encodeURIComponent(sit.value)+'&away_minutes='+encodeURIComponent(away.value);"
+      "let r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});"
+      "msg.textContent=r.ok?'Saved':'Save failed'}"
+      "async function saveCloud(e){e.preventDefault();let ids=['ssid','pass','server','device','token'],p=new URLSearchParams(),msg=document.getElementById('cloudMsg');ids.forEach(id=>p.append(document.getElementById(id).name,document.getElementById(id).value));msg.textContent='Saving...';let r=await fetch('/cloud',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});let t=await r.text();msg.textContent=r.ok?'Saved, rebooting...':('Save failed: '+t)}"
+      "async function forgetCloud(){let msg=document.getElementById('cloudMsg');msg.textContent='Clearing...';let r=await fetch('/cloud/forget',{method:'POST'});let t=await r.text();msg.textContent=r.ok?'Cleared, rebooting...':('Clear failed: '+t)}"
+      "setInterval(refreshFrame,1000);loadSettings();loadCloud()</script></main></body></html>";
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
@@ -735,6 +934,47 @@ esp_err_t sendSettings(httpd_req_t *req) {
   return httpd_resp_send(req, payload, HTTPD_RESP_USE_STRLEN);
 }
 
+void buildStatusPayload(char *payload, size_t payloadSize) {
+  const PresenceDiagnostics diag = presenceDetector.diagnostics();
+  snprintf(payload,
+           payloadSize,
+           "{\"state\":\"%s\",\"present\":%s,\"calibrated\":%s,\"score\":%u,"
+           "\"baseline\":%u,\"diff\":%u,\"button\":%s,\"raw_present\":%s,"
+           "\"on_frames\":%u,\"off_frames\":%u,\"on_required\":%u,"
+           "\"model_ready\":%s,\"model_prob\":%.3f,\"model_threshold\":%.2f,"
+           "\"model_version\":\"%s\",\"inference_ms\":%lu,"
+           "\"fallback_reason\":\"%s\",\"sit_minutes\":%lu,\"away_minutes\":%lu,"
+           "\"wifi_mode\":\"%s\",\"wifi_connected\":%s,"
+           "\"cloud_configured\":%s,\"cloud_last_poll_ms\":%lu,"
+           "\"cloud_last_success_ms\":%lu,\"cloud_last_error\":\"%s\"}",
+           stateLabel(timerContext.state),
+           diag.present ? "true" : "false",
+           diag.calibrated ? "true" : "false",
+           diag.score,
+           diag.baseline,
+           diag.diff,
+           isButtonDown() ? "true" : "false",
+           diag.rawPresent ? "true" : "false",
+           diag.onFrames,
+           diag.offFrames,
+           PRESENCE_ON_FRAMES,
+           diag.modelReady ? "true" : "false",
+           static_cast<double>(diag.modelProbability),
+           static_cast<double>(MODEL_OCCUPIED_THRESHOLD),
+           seatModel.version(),
+           static_cast<unsigned long>(diag.inferenceMs),
+           diag.fallbackReason == nullptr ? "" : diag.fallbackReason,
+           static_cast<unsigned long>(minutesFromMs(timerSettings.sitTargetMs)),
+           static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)),
+           wifiStartedAsSta ? "sta" : "ap",
+           (wifiEventGroup != nullptr &&
+            (xEventGroupGetBits(wifiEventGroup) & kWifiConnectedBit)) ? "true" : "false",
+           cloudSettingsComplete() ? "true" : "false",
+           static_cast<unsigned long>(cloudLastPollMs),
+           static_cast<unsigned long>(cloudLastSuccessMs),
+           cloudLastError);
+}
+
 bool parseUnsignedStrict(const char *value, uint32_t *out) {
   if (value == nullptr || *value == '\0' || out == nullptr) {
     return false;
@@ -746,6 +986,92 @@ bool parseUnsignedStrict(const char *value, uint32_t *out) {
   }
   *out = static_cast<uint32_t>(parsed);
   return true;
+}
+
+int hexValue(char c) {
+  if (c >= '0' && c <= '9') {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f') {
+    return c - 'a' + 10;
+  }
+  if (c >= 'A' && c <= 'F') {
+    return c - 'A' + 10;
+  }
+  return -1;
+}
+
+void formUrlDecodeInPlace(char *value) {
+  if (value == nullptr) {
+    return;
+  }
+  char *read = value;
+  char *write = value;
+  while (*read != '\0') {
+    if (*read == '+') {
+      *write++ = ' ';
+      read++;
+      continue;
+    }
+    if (*read == '%' && read[1] != '\0' && read[2] != '\0') {
+      const int hi = hexValue(read[1]);
+      const int lo = hexValue(read[2]);
+      if (hi >= 0 && lo >= 0) {
+        *write++ = static_cast<char>((hi << 4) | lo);
+        read += 3;
+        continue;
+      }
+    }
+    *write++ = *read++;
+  }
+  *write = '\0';
+}
+
+void trimInPlace(char *value) {
+  if (value == nullptr) {
+    return;
+  }
+  char *start = value;
+  while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') {
+    start++;
+  }
+  char *end = start + strlen(start);
+  while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+    end--;
+  }
+  const size_t length = static_cast<size_t>(end - start);
+  memmove(value, start, length);
+  value[length] = '\0';
+}
+
+bool readFormValue(const char *body, const char *key, char *out, size_t outSize) {
+  if (body == nullptr || key == nullptr || out == nullptr || outSize == 0) {
+    return false;
+  }
+  out[0] = '\0';
+  const size_t keyLength = strlen(key);
+  const char *cursor = body;
+  while (*cursor != '\0') {
+    const char *pairEnd = strchr(cursor, '&');
+    const size_t pairLength = pairEnd == nullptr ? strlen(cursor) : static_cast<size_t>(pairEnd - cursor);
+    const char *equals = static_cast<const char *>(memchr(cursor, '=', pairLength));
+    if (equals != nullptr && static_cast<size_t>(equals - cursor) == keyLength &&
+        strncmp(cursor, key, keyLength) == 0) {
+      const char *valueStart = equals + 1;
+      const size_t encodedLength = pairLength - keyLength - 1;
+      const size_t copyLength = std::min(encodedLength, outSize - 1);
+      memcpy(out, valueStart, copyLength);
+      out[copyLength] = '\0';
+      formUrlDecodeInPlace(out);
+      trimInPlace(out);
+      return true;
+    }
+    if (pairEnd == nullptr) {
+      break;
+    }
+    cursor = pairEnd + 1;
+  }
+  return false;
 }
 
 esp_err_t readPostBody(httpd_req_t *req, char *buffer, size_t bufferSize) {
@@ -800,36 +1126,82 @@ esp_err_t handleSettingsPost(httpd_req_t *req) {
   return sendSettings(req);
 }
 
-esp_err_t sendStatus(httpd_req_t *req) {
-  const PresenceDiagnostics diag = presenceDetector.diagnostics();
-  char payload[768] = {};
+esp_err_t sendCloudSettings(httpd_req_t *req) {
+  char payload[384] = {};
   snprintf(payload,
            sizeof(payload),
-           "{\"state\":\"%s\",\"present\":%s,\"calibrated\":%s,\"score\":%u,"
-           "\"baseline\":%u,\"diff\":%u,\"button\":%s,\"raw_present\":%s,"
-           "\"on_frames\":%u,\"off_frames\":%u,\"on_required\":%u,"
-           "\"model_ready\":%s,\"model_prob\":%.3f,\"model_threshold\":%.2f,"
-           "\"model_version\":\"%s\",\"inference_ms\":%lu,"
-           "\"fallback_reason\":\"%s\",\"sit_minutes\":%lu,\"away_minutes\":%lu}",
-           stateLabel(timerContext.state),
-           diag.present ? "true" : "false",
-           diag.calibrated ? "true" : "false",
-           diag.score,
-           diag.baseline,
-           diag.diff,
-           isButtonDown() ? "true" : "false",
-           diag.rawPresent ? "true" : "false",
-           diag.onFrames,
-           diag.offFrames,
-           PRESENCE_ON_FRAMES,
-           diag.modelReady ? "true" : "false",
-           static_cast<double>(diag.modelProbability),
-           static_cast<double>(MODEL_OCCUPIED_THRESHOLD),
-           seatModel.version(),
-           static_cast<unsigned long>(diag.inferenceMs),
-           diag.fallbackReason == nullptr ? "" : diag.fallbackReason,
-           static_cast<unsigned long>(minutesFromMs(timerSettings.sitTargetMs)),
-           static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)));
+           "{\"ssid\":\"%s\",\"server_url\":\"%s\",\"device_id\":\"%s\","
+           "\"token_set\":%s,\"configured\":%s,\"wifi_mode\":\"%s\"}",
+           cloudSettings.ssid,
+           cloudSettings.serverUrl,
+           cloudSettings.deviceId,
+           cloudSettings.token[0] == '\0' ? "false" : "true",
+           cloudSettingsComplete() ? "true" : "false",
+           wifiStartedAsSta ? "sta" : "ap");
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, payload, HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t handleCloudPost(httpd_req_t *req) {
+  char body[640] = {};
+  if (readPostBody(req, body, sizeof(body)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid cloud body");
+    return ESP_FAIL;
+  }
+
+  CloudSettings next = cloudSettings;
+  char value[180] = {};
+  if (readFormValue(body, "ssid", value, sizeof(value))) {
+    safeCopy(next.ssid, sizeof(next.ssid), value);
+  }
+  if (readFormValue(body, "password", value, sizeof(value))) {
+    safeCopy(next.password, sizeof(next.password), value);
+  }
+  if (readFormValue(body, "server_url", value, sizeof(value))) {
+    safeCopy(next.serverUrl, sizeof(next.serverUrl), value);
+  }
+  if (readFormValue(body, "device_id", value, sizeof(value))) {
+    safeCopy(next.deviceId, sizeof(next.deviceId), value);
+  }
+  if (readFormValue(body, "token", value, sizeof(value)) && value[0] != '\0') {
+    safeCopy(next.token, sizeof(next.token), value);
+  }
+
+  const esp_err_t err = saveCloudSettings(next);
+  if (err != ESP_OK) {
+    ESP_LOGE(kTag, "save cloud settings failed: %s", esp_err_to_name(err));
+    if (next.ssid[0] == '\0') {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing ssid");
+    } else if (next.serverUrl[0] == '\0') {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing server url");
+    } else if (!validServerUrl(next.serverUrl)) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "server url must start with http:// or https://");
+    } else if (next.deviceId[0] == '\0') {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing device id");
+    } else if (next.token[0] == '\0') {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing device token");
+    } else {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid cloud settings");
+    }
+    return ESP_FAIL;
+  }
+  rebootAtMs = millis32() + 2000;
+  return sendCloudSettings(req);
+}
+
+esp_err_t handleCloudForget(httpd_req_t *req) {
+  const esp_err_t err = forgetCloudSettings();
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "forget cloud failed");
+    return ESP_FAIL;
+  }
+  rebootAtMs = millis32() + 2000;
+  return httpd_resp_send(req, "forget ok", HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t sendStatus(httpd_req_t *req) {
+  char payload[1024] = {};
+  buildStatusPayload(payload, sizeof(payload));
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_send(req, payload, HTTPD_RESP_USE_STRLEN);
 }
@@ -900,12 +1272,13 @@ esp_err_t handleLabel(httpd_req_t *req) {
 void startWebServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;
+  config.max_uri_handlers = 12;
   ESP_ERROR_CHECK(httpd_start(&httpServer, &config));
 
   httpd_uri_t index = {};
   index.uri = "/";
   index.method = HTTP_GET;
-  index.handler = sendIndex;
+  index.handler = sendIndexCloud;
 
   httpd_uri_t capture = {};
   capture.uri = "/capture";
@@ -937,20 +1310,79 @@ void startWebServer() {
   label.method = HTTP_GET;
   label.handler = handleLabel;
 
-  httpd_register_uri_handler(httpServer, &index);
-  httpd_register_uri_handler(httpServer, &capture);
-  httpd_register_uri_handler(httpServer, &status);
-  httpd_register_uri_handler(httpServer, &reset);
-  httpd_register_uri_handler(httpServer, &settingsGet);
-  httpd_register_uri_handler(httpServer, &settingsPost);
-  httpd_register_uri_handler(httpServer, &label);
+  httpd_uri_t cloudGet = {};
+  cloudGet.uri = "/cloud";
+  cloudGet.method = HTTP_GET;
+  cloudGet.handler = sendCloudSettings;
+
+  httpd_uri_t cloudPost = {};
+  cloudPost.uri = "/cloud";
+  cloudPost.method = HTTP_POST;
+  cloudPost.handler = handleCloudPost;
+
+  httpd_uri_t cloudForget = {};
+  cloudForget.uri = "/cloud/forget";
+  cloudForget.method = HTTP_POST;
+  cloudForget.handler = handleCloudForget;
+
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &index));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &capture));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &status));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &reset));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &settingsGet));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &settingsPost));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &label));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudGet));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudPost));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudForget));
 }
 
-void startWifiAp() {
+void wifiEventHandler(void *arg, esp_event_base_t eventBase, int32_t eventId, void *eventData) {
+  (void)arg;
+  if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_STA_START) {
+    esp_wifi_connect();
+  } else if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_STA_DISCONNECTED) {
+    if (wifiEventGroup != nullptr) {
+      xEventGroupClearBits(wifiEventGroup, kWifiConnectedBit);
+    }
+    if (wifiStartedAsSta) {
+      esp_wifi_connect();
+    }
+  } else if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_GOT_IP) {
+    if (wifiEventGroup != nullptr) {
+      xEventGroupSetBits(wifiEventGroup, kWifiConnectedBit);
+    }
+    const ip_event_got_ip_t *event = static_cast<ip_event_got_ip_t *>(eventData);
+    ESP_LOGI(kTag, "STA got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+  }
+}
+
+void initWifiDriver() {
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_netif_t *apNetif = esp_netif_create_default_wifi_ap();
+  wifiEventGroup = xEventGroupCreate();
+  staNetif = esp_netif_create_default_wifi_sta();
+  apNetif = esp_netif_create_default_wifi_ap();
 
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                       ESP_EVENT_ANY_ID,
+                                                       &wifiEventHandler,
+                                                       nullptr,
+                                                       nullptr));
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                       IP_EVENT_STA_GOT_IP,
+                                                       &wifiEventHandler,
+                                                       nullptr,
+                                                       nullptr));
+  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+}
+
+void configureApIp() {
+  if (apNetif == nullptr) {
+    return;
+  }
   esp_netif_ip_info_t ip = {};
   IP4_ADDR(&ip.ip, CAMERA_PREVIEW_AP_IP_0, CAMERA_PREVIEW_AP_IP_1, CAMERA_PREVIEW_AP_IP_2, CAMERA_PREVIEW_AP_IP_3);
   IP4_ADDR(&ip.gw, CAMERA_PREVIEW_AP_IP_0, CAMERA_PREVIEW_AP_IP_1, CAMERA_PREVIEW_AP_IP_2, CAMERA_PREVIEW_AP_IP_3);
@@ -958,9 +1390,10 @@ void startWifiAp() {
   ESP_ERROR_CHECK(esp_netif_dhcps_stop(apNetif));
   ESP_ERROR_CHECK(esp_netif_set_ip_info(apNetif, &ip));
   ESP_ERROR_CHECK(esp_netif_dhcps_start(apNetif));
+}
 
-  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+void startWifiApOnly() {
+  configureApIp();
 
   wifi_config_t wifiConfig = {};
   strncpy(reinterpret_cast<char *>(wifiConfig.ap.ssid), CAMERA_PREVIEW_AP_SSID, sizeof(wifiConfig.ap.ssid));
@@ -975,9 +1408,300 @@ void startWifiAp() {
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifiConfig));
-  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
   ESP_ERROR_CHECK(esp_wifi_start());
+  wifiStartedAsAp = true;
+  wifiStartedAsSta = false;
   ESP_LOGI(kTag, "AP started: %s / http://192.168.4.1/", CAMERA_PREVIEW_AP_SSID);
+}
+
+bool startWifiStaOnly() {
+  wifi_config_t wifiConfig = {};
+  safeCopy(reinterpret_cast<char *>(wifiConfig.sta.ssid), sizeof(wifiConfig.sta.ssid), cloudSettings.ssid);
+  safeCopy(reinterpret_cast<char *>(wifiConfig.sta.password), sizeof(wifiConfig.sta.password), cloudSettings.password);
+  wifiConfig.sta.threshold.authmode = WIFI_AUTH_OPEN;
+  wifiConfig.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+
+  if (wifiEventGroup != nullptr) {
+    xEventGroupClearBits(wifiEventGroup, kWifiConnectedBit);
+  }
+
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifiConfig));
+  wifiStartedAsSta = true;
+  wifiStartedAsAp = false;
+  ESP_ERROR_CHECK(esp_wifi_start());
+
+  const EventBits_t bits = xEventGroupWaitBits(wifiEventGroup,
+                                               kWifiConnectedBit,
+                                               pdFALSE,
+                                               pdTRUE,
+                                               pdMS_TO_TICKS(kStaConnectTimeoutMs));
+  if ((bits & kWifiConnectedBit) != 0) {
+    setCloudError("wifi_connected");
+    return true;
+  }
+
+  ESP_LOGW(kTag, "STA connect timeout, fallback to AP");
+  setCloudError("wifi_timeout");
+  esp_wifi_stop();
+  wifiStartedAsSta = false;
+  return false;
+}
+
+void startWifi() {
+  initWifiDriver();
+  if (cloudSettingsComplete() && startWifiStaOnly()) {
+    ESP_LOGI(kTag, "STA mode active, cloud server: %s", cloudSettings.serverUrl);
+    return;
+  }
+  startWifiApOnly();
+}
+
+struct CloudResponseBuffer {
+  char *data = nullptr;
+  size_t capacity = 0;
+  size_t length = 0;
+};
+
+esp_err_t cloudHttpEvent(esp_http_client_event_t *event) {
+  if (event->event_id != HTTP_EVENT_ON_DATA || event->user_data == nullptr) {
+    return ESP_OK;
+  }
+  CloudResponseBuffer *buffer = static_cast<CloudResponseBuffer *>(event->user_data);
+  if (buffer->data == nullptr || buffer->capacity == 0 || event->data_len <= 0) {
+    return ESP_OK;
+  }
+  const size_t copyLen = std::min(static_cast<size_t>(event->data_len),
+                                  buffer->capacity - buffer->length - 1);
+  if (copyLen > 0) {
+    memcpy(buffer->data + buffer->length, event->data, copyLen);
+    buffer->length += copyLen;
+    buffer->data[buffer->length] = '\0';
+  }
+  return ESP_OK;
+}
+
+void buildCloudUrl(const char *path, char *url, size_t urlSize) {
+  const size_t length = strlen(cloudSettings.serverUrl);
+  const bool hasSlash = length > 0 && cloudSettings.serverUrl[length - 1] == '/';
+  snprintf(url, urlSize, "%s%s%s", cloudSettings.serverUrl, hasSlash ? "" : "/", path);
+}
+
+esp_err_t cloudPost(const char *path,
+                    const char *contentType,
+                    const uint8_t *body,
+                    size_t bodyLength,
+                    char *response,
+                    size_t responseSize) {
+  char url[240] = {};
+  buildCloudUrl(path, url, sizeof(url));
+
+  CloudResponseBuffer responseBuffer = {response, responseSize, 0};
+  if (response != nullptr && responseSize > 0) {
+    response[0] = '\0';
+  }
+
+  esp_http_client_config_t config = {};
+  config.url = url;
+  config.method = HTTP_METHOD_POST;
+  config.timeout_ms = kCloudHttpTimeoutMs;
+  config.event_handler = cloudHttpEvent;
+  config.user_data = &responseBuffer;
+  if (startsWith(url, "https://")) {
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+  }
+
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (client == nullptr) {
+    return ESP_FAIL;
+  }
+
+  char auth[128] = {};
+  snprintf(auth, sizeof(auth), "Bearer %s", cloudSettings.token);
+  esp_http_client_set_header(client, "Authorization", auth);
+  esp_http_client_set_header(client, "Content-Type", contentType);
+  esp_http_client_set_post_field(client,
+                                 reinterpret_cast<const char *>(body),
+                                 static_cast<int>(bodyLength));
+
+  esp_err_t err = esp_http_client_perform(client);
+  const int status = esp_http_client_get_status_code(client);
+  esp_http_client_cleanup(client);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "cloud post failed: %s %s", path, esp_err_to_name(err));
+    return err;
+  }
+  if (status < 200 || status >= 300) {
+    ESP_LOGW(kTag, "cloud post status=%d path=%s response=%s", status, path, response == nullptr ? "" : response);
+    return ESP_FAIL;
+  }
+  return ESP_OK;
+}
+
+bool jsonFindString(const char *json, const char *key, char *out, size_t outSize) {
+  if (json == nullptr || key == nullptr || out == nullptr || outSize == 0) {
+    return false;
+  }
+  char pattern[40] = {};
+  snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+  const char *start = strstr(json, pattern);
+  if (start == nullptr) {
+    return false;
+  }
+  start += strlen(pattern);
+  const char *end = strchr(start, '"');
+  if (end == nullptr || end == start) {
+    return false;
+  }
+  const size_t length = std::min(static_cast<size_t>(end - start), outSize - 1);
+  memcpy(out, start, length);
+  out[length] = '\0';
+  return true;
+}
+
+bool jsonFindUint(const char *json, const char *key, uint32_t *out) {
+  if (json == nullptr || key == nullptr || out == nullptr) {
+    return false;
+  }
+  char pattern[40] = {};
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  const char *start = strstr(json, pattern);
+  if (start == nullptr) {
+    return false;
+  }
+  start += strlen(pattern);
+  char *end = nullptr;
+  const unsigned long value = strtoul(start, &end, 10);
+  if (end == start || value > UINT32_MAX) {
+    return false;
+  }
+  *out = static_cast<uint32_t>(value);
+  return true;
+}
+
+void postCommandResult(const char *commandId, bool ok, const char *message) {
+  char path[] = "device/result";
+  char body[256] = {};
+  snprintf(body,
+           sizeof(body),
+           "{\"device_id\":\"%s\",\"command_id\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
+           cloudSettings.deviceId,
+           commandId == nullptr ? "" : commandId,
+           ok ? "true" : "false",
+           message == nullptr ? "" : message);
+  char response[256] = {};
+  cloudPost(path,
+            "application/json",
+            reinterpret_cast<const uint8_t *>(body),
+            strlen(body),
+            response,
+            sizeof(response));
+}
+
+bool captureJpegForCloud(const char *commandId) {
+  camera_fb_t *frame = esp_camera_fb_get();
+  if (frame == nullptr) {
+    return false;
+  }
+
+  uint8_t *jpgBuffer = nullptr;
+  size_t jpgLength = 0;
+  bool converted = false;
+
+  if (frame->format == PIXFORMAT_JPEG) {
+    jpgBuffer = frame->buf;
+    jpgLength = frame->len;
+  } else {
+    converted = frame2jpg(frame, 80, &jpgBuffer, &jpgLength);
+  }
+
+  if (jpgBuffer == nullptr || jpgLength == 0) {
+    esp_camera_fb_return(frame);
+    return false;
+  }
+
+  char path[96] = {};
+  snprintf(path, sizeof(path), "device/capture?command_id=%s", commandId == nullptr ? "" : commandId);
+  char response[256] = {};
+  const esp_err_t err = cloudPost(path, "image/jpeg", jpgBuffer, jpgLength, response, sizeof(response));
+  if (converted) {
+    free(jpgBuffer);
+  }
+  esp_camera_fb_return(frame);
+  return err == ESP_OK;
+}
+
+void handleCloudCommand(const char *response) {
+  if (response == nullptr || strstr(response, "\"command\":null") != nullptr) {
+    return;
+  }
+  char commandId[48] = {};
+  char commandType[24] = {};
+  if (!jsonFindString(response, "id", commandId, sizeof(commandId)) ||
+      !jsonFindString(response, "type", commandType, sizeof(commandType))) {
+    return;
+  }
+
+  if (strcmp(commandType, "capture") == 0) {
+    const bool ok = captureJpegForCloud(commandId);
+    if (!ok) {
+      postCommandResult(commandId, false, "capture_failed");
+    }
+    return;
+  }
+
+  if (strcmp(commandType, "set_settings") == 0) {
+    uint32_t sitMinutes = 0;
+    uint32_t awayMinutes = 0;
+    const bool ok = jsonFindUint(response, "sit_minutes", &sitMinutes) &&
+                    jsonFindUint(response, "away_minutes", &awayMinutes) &&
+                    saveTimerSettings(sitMinutes, awayMinutes) == ESP_OK;
+    postCommandResult(commandId, ok, ok ? "settings_saved" : "settings_failed");
+    return;
+  }
+
+  if (strcmp(commandType, "reset") == 0) {
+    resetTimer();
+    presenceDetector.recalibrate();
+    postCommandResult(commandId, true, "reset_ok");
+    return;
+  }
+}
+
+void cloudPollTask(void *arg) {
+  (void)arg;
+  while (true) {
+    vTaskDelay(pdMS_TO_TICKS(kCloudPollIntervalMs));
+    if (!cloudSettingsComplete() || !wifiStartedAsSta || wifiEventGroup == nullptr ||
+        (xEventGroupGetBits(wifiEventGroup) & kWifiConnectedBit) == 0) {
+      continue;
+    }
+
+    char status[1024] = {};
+    buildStatusPayload(status, sizeof(status));
+    char body[1280] = {};
+    snprintf(body,
+             sizeof(body),
+             "{\"device_id\":\"%s\",\"status\":%s}",
+             cloudSettings.deviceId,
+             status);
+
+    char response[kMaxCloudResponseBytes] = {};
+    cloudLastPollMs = millis32();
+    const esp_err_t err = cloudPost("device/poll",
+                                    "application/json",
+                                    reinterpret_cast<const uint8_t *>(body),
+                                    strlen(body),
+                                    response,
+                                    sizeof(response));
+    if (err == ESP_OK) {
+      cloudLastSuccessMs = millis32();
+      setCloudError("ok");
+      handleCloudCommand(response);
+    } else {
+      setCloudError("poll_failed");
+    }
+  }
 }
 
 void setupButton() {
@@ -994,6 +1718,7 @@ void setupButton() {
 extern "C" void app_main(void) {
   normalizeNvsInit();
   loadTimerSettings();
+  loadCloudSettings();
   buzzerBegin();
   setupButton();
   display.begin();
@@ -1009,12 +1734,16 @@ extern "C" void app_main(void) {
     display.flush();
   }
 
-  startWifiAp();
+  startWifi();
   startWebServer();
+  xTaskCreate(cloudPollTask, "cloud_poll", 8192, nullptr, 5, nullptr);
 
-  ESP_LOGI(kTag, "ready. AP URL: http://192.168.4.1/");
+  ESP_LOGI(kTag, "ready. local URL: http://192.168.4.1/ when AP is active");
   while (true) {
     const uint32_t nowMs = millis32();
+    if (rebootAtMs != 0 && static_cast<int32_t>(nowMs - rebootAtMs) >= 0) {
+      esp_restart();
+    }
     const bool isPresent = presenceDetector.update(nowMs);
     updateButton(nowMs);
     handleButton();

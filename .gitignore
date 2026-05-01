@@ -23,3 +23,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Cloud relay local files
+cloud-relay/node_modules/
+cloud-relay/.env
+cloud-relay/.env.*

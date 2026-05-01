@@ -1,7 +1,6 @@
-# ESP-IDF 主线固件
+# Bell Robot ESP-IDF Firmware
 
-ESP32-S3 N16R8 CAM 久坐提醒固件。设备固定创建 `Bell-Robot` 热点，手机连接后访问 `http://192.168.4.1/` 查看摄像头、调整计时、重置和采集样本。
-倒计时过程中暂离会在容忍时间内暂停，回来后继续；超过容忍时间仍未回来则重置本轮。
+ESP32-S3 N16R8 CAM 久坐提醒固件。设备默认优先连接路由器 Wi-Fi 并通过云中转远程访问；未配置或联网失败时开启 `Bell-Robot` 热点，手机可访问 `http://192.168.4.1/` 完成首次配置。
 
 ## 构建
 
@@ -10,48 +9,37 @@ cd D:\Project\Bell-Robot\embedded\firmware-idf
 powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1
 ```
 
-烧录：
+## 烧录
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1 -Flash -Port COM13
 ```
 
-## AP 与接口
+## 本地接口
 
-- SSID：`Bell-Robot`
-- 密码：`12345678`
-- URL：`http://192.168.4.1/`
+- `/`：摄像头预览、计时设置、云配置、样本采集入口
+- `/capture`：当前 JPEG 画面
+- `/status`：状态 JSON，包含模型概率、计时和联网诊断
+- `/settings`：读取/保存倒计时和离场容忍分钟数
+- `/cloud`：读取/保存 2.4G Wi-Fi、服务器地址、设备 ID、设备 Token
+- `/cloud/forget`：清除云配置并重启
+- `/reset`：重置当前计时并重新校准
+- `/label?class=absent|seated`：下载一帧 `8x8` PGM 样本
 
-接口：
+## 分区
 
-- `/`：预览页和设置页。
-- `/capture`：当前摄像头 JPEG。
-- `/status`：状态 JSON，含模型概率、推理耗时、倒计时配置等诊断字段。
-- `/settings`：读取/保存倒计时和离场容忍分钟数。
-- `/reset`：重置计时并重新校准 ROI fallback。
-- `/label?class=absent|seated`：采集训练样本。
+启用 HTTPS 证书包和云轮询后固件超过默认 1MB app 分区。当前使用 `partitions.csv`：
 
-## 主要文件
+- `nvs`：24KB
+- `phy_init`：4KB
+- `factory`：3MB
 
-- `main/main.cpp`：摄像头、AP、HTTP、状态机、蜂鸣器、按钮和 OLED。
-- `main/seat_model.*`：本地 int8 模型推理接口。
-- `main/seat_model_data.h`：训练脚本生成的模型权重。
-- `main/ssd1306_spi.*`：SPI SSD1306 文本显示驱动。
-- `tools/build-idf.ps1`：本机 ESP-IDF 构建/烧录入口。
+## 当前验证
 
-## 模型
-
-样本目录在仓库根目录：
-
-```text
-model/dataset/absent/
-model/dataset/seated/
-```
-
-从仓库根目录训练：
-
-```powershell
-python model\train_seat_model.py --dataset model\dataset --out embedded\firmware-idf\main\seat_model_data.h --balance-classes
-```
-
-当前模型使用 `8x8` 归一化灰度特征；OLED 竖屏主界面只显示状态、倒计时和 `PROB` 识别概率。
+- 2026-05-01：云中转版本已构建并烧录到 `COM13`，写入和 Hash 校验通过；固件大小 `0x10e890`，3MB app 分区剩余约 65%。
+- 2026-05-01：修复 AP 配网页保存云配置时 URL 编码未解码导致保存失败的问题；已构建并烧录到 `COM13`，固件大小 `0x10e960`。
+- 2026-05-01：AP 云配置保存改为固件自有表单解析，并在网页显示具体失败原因，便于现场排查。
+- 2026-05-01：表单解析增强版本已构建并烧录到 `COM13`，写入和 Hash 校验通过；固件大小 `0x10ebc0`。
+- 2026-05-01：修复本地 HTTP 接口数量不足导致 `POST /cloud` 未注册、保存云配置返回 method invalid 的问题。
+- 2026-05-01：`POST /cloud` 注册修复版本已构建并烧录到 `COM13`，写入和 Hash 校验通过；固件大小 `0x10eed0`。
+- Docker 未在当前 Windows 环境安装，`cloud-relay` 的 Compose 配置需在服务器或装有 Docker 的机器上验证。
