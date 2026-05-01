@@ -28,7 +28,6 @@ namespace {
 constexpr char kTag[] = "bell_robot";
 constexpr uint32_t kFeatureCount = 64;
 constexpr int kTimerDigitScale = 4;
-constexpr int kAlertScale = 2;
 constexpr uint32_t kMsPerMinute = 60UL * 1000UL;
 constexpr uint32_t kSitMinMinutes = 1;
 constexpr uint32_t kSitMaxMinutes = 180;
@@ -122,18 +121,15 @@ const char *displayStateLabel(TimerState state, bool isPresent) {
   return "UNKNOWN";
 }
 
-void formatTime(uint32_t ms, char *buffer, size_t bufferSize) {
-  const uint32_t totalSeconds = (ms + 999) / 1000;
-  snprintf(buffer, bufferSize, "%02lu:%02lu",
-           static_cast<unsigned long>(totalSeconds / 60),
-           static_cast<unsigned long>(totalSeconds % 60));
-}
-
 int scaledTextWidth(const char *text, int scale) {
   if (text == nullptr || scale <= 0) {
     return 0;
   }
   return static_cast<int>(strlen(text)) * 6 * scale;
+}
+
+int centeredTextX(const char *text, int scale) {
+  return std::max(0, (OLED_WIDTH - scaledTextWidth(text, scale)) / 2);
 }
 
 void normalizeNvsInit() {
@@ -600,40 +596,21 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
   char secondsText[4] = {};
   snprintf(minutesText, sizeof(minutesText), "%02lu", static_cast<unsigned long>(displayMinutes));
   snprintf(secondsText, sizeof(secondsText), "%02lu", static_cast<unsigned long>(displaySeconds));
-  const int minutesX = std::max(0, (OLED_WIDTH - scaledTextWidth(minutesText, kTimerDigitScale)) / 2);
-  const int secondsX = std::max(0, (OLED_WIDTH - scaledTextWidth(secondsText, kTimerDigitScale)) / 2);
   const char *displayState = displayStateLabel(timerContext.state, isPresent);
-  const char *detectText = isPresent ? "sit" : "away";
+  const uint32_t probabilityPercent = std::min<uint32_t>(
+      100,
+      static_cast<uint32_t>(diag.modelProbability * 100.0f + 0.5f));
+  char probabilityText[16] = {};
+  snprintf(probabilityText,
+           sizeof(probabilityText),
+           "PROB %02lu%%",
+           static_cast<unsigned long>(probabilityPercent));
 
   display.clear();
-  display.textf(0, 0, "%s", displayState);
-  display.textf(0, 1, "%s %02u%%",
-                detectText,
-                static_cast<unsigned>(diag.modelProbability * 100.0f));
-  display.textf(0, 2, "R%c ON%u/%u",
-                diag.rawPresent ? 'Y' : 'N',
-                diag.onFrames,
-                PRESENCE_ON_FRAMES);
-  if (timerContext.state == TimerState::Alerting) {
-    const char *alertText = "STAND";
-    const int alertX = std::max(0, (OLED_WIDTH - scaledTextWidth(alertText, kAlertScale)) / 2);
-    display.textScaled(alertX, 48, kAlertScale, alertText);
-  } else {
-    display.textScaled(minutesX, 28, kTimerDigitScale, minutesText);
-    display.textScaled(secondsX, 70, kTimerDigitScale, secondsText);
-  }
-  if (timerContext.state == TimerState::AwayGrace || timerContext.state == TimerState::AwayWarning) {
-    char away[8] = {};
-    const uint32_t awayMs = nowMs - timerContext.awayStartMs;
-    formatTime(timerSettings.awayResetMs - std::min(awayMs, timerSettings.awayResetMs), away, sizeof(away));
-    display.textf(0, 14, "RST %s", away);
-  } else if (timerContext.state == TimerState::Idle && !diag.modelReady) {
-    display.textf(0, 14, "FB D:%u", diag.diff);
-  } else if (timerContext.state == TimerState::Sitting) {
-    display.textf(0, 14, "PROB:%02u%%", static_cast<unsigned>(diag.modelProbability * 100.0f));
-  } else if (timerContext.state == TimerState::Alerting) {
-    display.textf(0, 14, "PRESS BTN");
-  }
+  display.textScaled(centeredTextX(displayState, 1), 6, 1, displayState);
+  display.textScaled(centeredTextX(minutesText, kTimerDigitScale), 28, kTimerDigitScale, minutesText);
+  display.textScaled(centeredTextX(secondsText, kTimerDigitScale), 70, kTimerDigitScale, secondsText);
+  display.textScaled(centeredTextX(probabilityText, 1), 116, 1, probabilityText);
   display.flush();
 }
 

@@ -53,4 +53,4 @@ model/dataset/seated/
 python model\train_seat_model.py --dataset model\dataset --out embedded\firmware-idf\main\seat_model_data.h --balance-classes
 ```
 
-当前模型使用 `8x8` 归一化灰度特征；OLED 竖屏显示状态、识别概率、连续帧诊断和倒计时。
+当前模型使用 `8x8` 归一化灰度特征；OLED 竖屏主界面只显示状态、倒计时和 `PROB` 识别概率。

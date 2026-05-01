@@ -71,6 +71,7 @@ python model\train_seat_model.py --dataset model\dataset --out embedded\firmware
 - 2026-05-01：已删除 STA/mDNS/网络配网页面和 `/network*` 接口，固件固定使用 AP 直连。
 - 2026-05-01：设备热点 SSID 改为 `Bell-Robot`；已构建并烧录到 `COM13`，写入和 Hash 校验通过；固件大小 `0xe0cf0`，APP 分区剩余约 12%。
 - 2026-05-01：已清理可再生成产物：`firmware-idf/build*`、`managed_components`、`sdkconfig`、`dependencies.lock` 和 `model/__pycache__`。
+- 2026-05-01：OLED 倒计时主界面精简为状态、倒计时和 `PROB` 识别概率三项，移除帧数、raw、RST 和按键提示等诊断文字。
 
 ## 待核对
 
