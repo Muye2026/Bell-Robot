@@ -36,7 +36,9 @@ static constexpr uint8_t CAMERA_PREVIEW_AP_IP_1 = 168;
 static constexpr uint8_t CAMERA_PREVIEW_AP_IP_2 = 4;
 static constexpr uint8_t CAMERA_PREVIEW_AP_IP_3 = 1;
 
-// Current camera module: OV5640CSP, silk screen "VVS OV5640CSP 8225N VC".
+// Current camera module: DC5640 AF 120-degree lens.
+// Pin mapping currently reuses the Freenove OV5640-class interface and must be
+// re-verified against the actual module if capture orientation or wiring looks off.
 static constexpr bool CAMERA_VFLIP = true;
 static constexpr bool CAMERA_HMIRROR = false;
 

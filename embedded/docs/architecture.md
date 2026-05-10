@@ -11,7 +11,7 @@
 
 ```mermaid
 flowchart LR
-  Camera["OV5640CSP"] --> MCU["ESP32-S3 N16R8 CAM"]
+  Camera["DC5640 AF 120度"] --> MCU["ESP32-S3 N16R8 CAM"]
   OLED["SPI SSD1306 OLED"] <--> MCU
   Button["Reset Button"] --> MCU
   MCU --> Buzzer["Buzzer"]

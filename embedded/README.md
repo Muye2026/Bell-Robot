@@ -5,7 +5,7 @@ ESP32-S3 久坐提醒器固件。设备本地完成坐姿识别、倒计时、OL
 ## 当前主线
 
 - 固件：`firmware-idf/`
-- 硬件：Freenove ESP32-S3 N16R8 CAM + OV5640CSP + SPI SSD1306 OLED + 蜂鸣器 + 单按键
+- 硬件：Freenove ESP32-S3 N16R8 CAM + DC5640 AF 120度 + SPI SSD1306 OLED + 蜂鸣器 + 单按键
 - 网络：STA 联网优先；未配置或联网失败约 15 秒后开启 `Bell-Robot` 热点
 - 云端：`cloud-relay/` 支持多设备，网页端不需要 `admin` 登录
 - 设备身份：`device_id` 根据芯片 MAC 自动生成；设备 token 随机生成并保存在 NVS，用户不填写
@@ -90,3 +90,10 @@ python model\train_seat_model.py --dataset model\dataset --out embedded\firmware
 - 2026-05-01：云中转改为多设备管理，取消网页登录密码；固件自动生成 `device_id` 和隐藏 token。
 - 2026-05-01：旧默认 ID `bell-robot-1` 已迁移为按 MAC 生成的 `bell-robot-f63910`，并已烧录到 `COM13`。
 - 2026-05-01：服务器 `43.134.30.245:8080` 已部署新版，网页设备列表显示 `bell-robot-f63910` 在线。
+- 2026-05-10：主线摄像头已切换为 `DC5640 AF 120度`；本轮先同步仓库内硬件描述，运行参数仍沿用现有配置，待现场抓帧复核镜像方向、ROI 和 AF 实际表现。
+
+## 下一步
+
+- 上电抓一帧本地预览或 `/capture`，确认 `CAMERA_VFLIP`、`CAMERA_HMIRROR` 是否仍正确。
+- 按 120 度视角重看人体在画面中的占比，必要时调整 `ROI_X/Y/W/H_PERCENT`。
+- 如果 AF 默认行为不稳定，再补充模组初始化或固定焦点策略。
