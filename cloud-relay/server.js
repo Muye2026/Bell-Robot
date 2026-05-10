@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const port = Number(process.env.PORT || 8080);
-const offlineAfterMs = Number(process.env.OFFLINE_AFTER_MS || 5000);
+const offlineAfterMs = Number(process.env.OFFLINE_AFTER_MS || 30000);
 const dataDir = process.env.DATA_DIR || "/data";
 const registryPath = path.join(dataDir, "devices.json");
 

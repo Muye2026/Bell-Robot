@@ -6,7 +6,7 @@ ESP32-S3 久坐提醒器固件。设备本地完成坐姿识别、倒计时、OL
 
 - 固件：`firmware-idf/`
 - 硬件：Freenove ESP32-S3 N16R8 CAM + DC5640 AF 120度 + SPI SSD1306 OLED + 蜂鸣器 + 单按键
-- 网络：STA 联网优先；未配置或联网失败约 15 秒后开启 `Bell-Robot` 热点
+- 网络：STA 联网优先；未配置、联网失败或云端连续不可达时开启 `Bell-Robot` 热点
 - 云端：`cloud-relay/` 支持多设备，网页端不需要 `admin` 登录
 - 设备身份：`device_id` 根据芯片 MAC 自动生成；设备 token 随机生成并保存在 NVS，用户不填写
 - 计时：默认坐满 45 分钟提醒，暂离容忍默认 1 分钟；暂离期间倒计时暂停，回来继续，超时重置
@@ -26,17 +26,6 @@ http://43.134.30.245:8080
 
 设备上线后会自动登记到服务器设备列表。
 
-## 本地接口
-
-- `/`：本地预览、计时设置、云配置和样本采集入口
-- `/capture`：当前 JPEG 画面
-- `/settings`：读取/保存 `sit_minutes=1..180`、`away_minutes=1..5`
-- `/cloud`：读取/保存 Wi-Fi 和服务器地址
-- `/cloud/forget`：清除 Wi-Fi/服务器配置并重启，保留设备身份
-- `/status`：状态 JSON，包含模型概率、计时设置、联网诊断和 `device_id`
-- `/reset`：重置当前计时并重新校准 ROI fallback
-- `/label?class=absent|seated`：下载一帧 `8x8` PGM 样本
-
 ## 构建与烧录
 
 ```powershell
@@ -44,8 +33,6 @@ cd D:\Project\Bell-Robot\embedded\firmware-idf
 powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1
 powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1 -Flash -Port COM13
 ```
-
-当前使用 `partitions.csv`，factory app 分区为 3MB。
 
 ## 云中转
 
@@ -56,15 +43,11 @@ docker compose up -d --build
 
 主要接口：
 
-- `GET /`：手机网页
 - `GET /api/devices`：设备列表
 - `GET /api/status?device_id=...`：指定设备状态
 - `POST /api/settings?device_id=...`：下发计时设置命令
 - `POST /api/reset?device_id=...`：下发重置命令
 - `GET /api/capture.jpg?device_id=...`：按需请求设备上传一张 JPEG
-- `POST /device/poll`：设备轮询并上报状态
-- `POST /device/capture?device_id=...`：设备上传快照
-- `POST /device/result`：设备回传命令执行结果
 
 ## 模型训练
 
@@ -84,16 +67,13 @@ python model\train_seat_model.py --dataset model\dataset --out embedded\firmware
 
 - 2026-05-01：OLED 主界面精简为状态、倒计时和 `PROB`。
 - 2026-05-01：暂离容忍时间内倒计时暂停，回来继续；超过容忍时间重置。
-- 2026-05-01：新增云中转、STA 优先/AP 兜底、按需 JPEG 快照。
-- 2026-05-01：修复 AP 配网页保存云配置的 URL 解码和 `POST /cloud` 注册问题。
-- 2026-05-01：云端计时输入框编辑时不再被 1 秒状态刷新覆盖。
 - 2026-05-01：云中转改为多设备管理，取消网页登录密码；固件自动生成 `device_id` 和隐藏 token。
-- 2026-05-01：旧默认 ID `bell-robot-1` 已迁移为按 MAC 生成的 `bell-robot-f63910`，并已烧录到 `COM13`。
-- 2026-05-01：服务器 `43.134.30.245:8080` 已部署新版，网页设备列表显示 `bell-robot-f63910` 在线。
-- 2026-05-10：主线摄像头已切换为 `DC5640 AF 120度`；本轮先同步仓库内硬件描述，运行参数仍沿用现有配置，待现场抓帧复核镜像方向、ROI 和 AF 实际表现。
+- 2026-05-10：主线摄像头切换为 `DC5640 AF 120度`，固件仍按 OV5640 类接口识别成功。
+- 2026-05-10：STA 云远程固件已烧录到 `COM13`，设备连接 `Innoxsz-2.4G` 成功。
+- 2026-05-10：修复云请求超时容错，设备 `bell-robot-f63910` 持续在线，远程快照返回 JPEG。
 
-## 下一步
+## 后续关注
 
-- 上电抓一帧本地预览或 `/capture`，确认 `CAMERA_VFLIP`、`CAMERA_HMIRROR` 是否仍正确。
-- 按 120 度视角重看人体在画面中的占比，必要时调整 `ROI_X/Y/W/H_PERCENT`。
+- 如果现场网络再次长时间无法访问云端，设备应在约 90 秒后回到 `Bell-Robot` 热点。
 - 如果 AF 默认行为不稳定，再补充模组初始化或固定焦点策略。
+- 若 120 度视角导致人体占比变化明显，再复核 ROI 和模型样本。

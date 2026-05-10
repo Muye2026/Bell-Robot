@@ -9,3 +9,4 @@ services:
     environment:
       PORT: "8080"
       DATA_DIR: "/data"
+      OFFLINE_AFTER_MS: "30000"

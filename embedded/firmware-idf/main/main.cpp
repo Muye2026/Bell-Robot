@@ -52,7 +52,8 @@ constexpr char kLegacyDefaultDeviceId[] = "bell-robot-1";
 constexpr char kDefaultCloudServerUrl[] = "http://43.134.30.245:8080";
 constexpr uint32_t kStaConnectTimeoutMs = 15000;
 constexpr uint32_t kCloudPollIntervalMs = 1000;
-constexpr uint32_t kCloudHttpTimeoutMs = 8000;
+constexpr uint32_t kCloudHttpTimeoutMs = 20000;
+constexpr uint32_t kCloudFailureApFallbackMs = 90000;
 constexpr size_t kMaxCloudResponseBytes = 2048;
 constexpr EventBits_t kWifiConnectedBit = BIT0;
 
@@ -113,6 +114,7 @@ uint32_t lastStatusLogMs = 0;
 uint32_t lastButtonChangeMs = 0;
 uint32_t cloudLastPollMs = 0;
 uint32_t cloudLastSuccessMs = 0;
+uint32_t cloudFirstFailureMs = 0;
 uint32_t rebootAtMs = 0;
 bool lastButtonLevel = true;
 bool buttonPressedEvent = false;
@@ -1749,10 +1751,24 @@ void cloudPollTask(void *arg) {
                                     sizeof(response));
     if (err == ESP_OK) {
       cloudLastSuccessMs = millis32();
+      cloudFirstFailureMs = 0;
       setCloudError("ok");
       handleCloudCommand(response);
     } else {
+      const uint32_t nowMs = millis32();
+      if (cloudFirstFailureMs == 0) {
+        cloudFirstFailureMs = nowMs;
+      }
       setCloudError("poll_failed");
+      if (static_cast<int32_t>(nowMs - cloudFirstFailureMs) >=
+          static_cast<int32_t>(kCloudFailureApFallbackMs)) {
+        ESP_LOGW(kTag, "cloud poll failed for too long, fallback to AP");
+        setCloudError("cloud_fallback_ap");
+        esp_wifi_stop();
+        wifiStartedAsSta = false;
+        cloudFirstFailureMs = 0;
+        startWifiApOnly();
+      }
     }
   }
 }
