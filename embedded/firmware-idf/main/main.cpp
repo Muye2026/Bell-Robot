@@ -1000,7 +1000,7 @@ void buildStatusPayload(char *payload, size_t payloadSize) {
            "\"model_ready\":%s,\"model_prob\":%.3f,\"model_threshold\":%.2f,"
            "\"model_version\":\"%s\",\"inference_ms\":%lu,"
            "\"fallback_reason\":\"%s\",\"sit_minutes\":%lu,\"away_minutes\":%lu,"
-           "\"device_id\":\"%s\",\"wifi_mode\":\"%s\",\"wifi_connected\":%s,"
+           "\"cloud_enabled\":%s,\"device_id\":\"%s\",\"wifi_mode\":\"%s\",\"wifi_connected\":%s,"
            "\"cloud_configured\":%s,\"cloud_last_poll_ms\":%lu,"
            "\"cloud_last_success_ms\":%lu,\"cloud_last_error\":\"%s\"}",
            stateLabel(timerContext.state),
@@ -1022,6 +1022,7 @@ void buildStatusPayload(char *payload, size_t payloadSize) {
            diag.fallbackReason == nullptr ? "" : diag.fallbackReason,
            static_cast<unsigned long>(minutesFromMs(timerSettings.sitTargetMs)),
            static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)),
+           ENABLE_CLOUD_REMOTE ? "true" : "false",
            cloudSettings.deviceId,
            wifiStartedAsSta ? "sta" : "ap",
            (wifiEventGroup != nullptr &&
@@ -1329,7 +1330,7 @@ void startWebServer() {
   httpd_uri_t index = {};
   index.uri = "/";
   index.method = HTTP_GET;
-  index.handler = sendIndexCloud;
+  index.handler = ENABLE_CLOUD_REMOTE ? sendIndexCloud : sendIndex;
 
   httpd_uri_t capture = {};
   capture.uri = "/capture";
@@ -1383,9 +1384,11 @@ void startWebServer() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &settingsGet));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &settingsPost));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &label));
-  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudGet));
-  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudPost));
-  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudForget));
+  if (ENABLE_CLOUD_REMOTE) {
+    ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudGet));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudPost));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudForget));
+  }
 }
 
 void wifiEventHandler(void *arg, esp_event_base_t eventBase, int32_t eventId, void *eventData) {
@@ -1501,6 +1504,11 @@ bool startWifiStaOnly() {
 
 void startWifi() {
   initWifiDriver();
+  if (!ENABLE_CLOUD_REMOTE) {
+    setCloudError("disabled");
+    startWifiApOnly();
+    return;
+  }
   if (cloudSettingsComplete() && startWifiStaOnly()) {
     ESP_LOGI(kTag, "STA mode active, cloud server: %s", cloudSettings.serverUrl);
     return;
@@ -1787,7 +1795,11 @@ void setupButton() {
 extern "C" void app_main(void) {
   normalizeNvsInit();
   loadTimerSettings();
-  loadCloudSettings();
+  if (ENABLE_CLOUD_REMOTE) {
+    loadCloudSettings();
+  } else {
+    setCloudError("disabled");
+  }
   buzzerBegin();
   setupButton();
   display.begin();
@@ -1805,7 +1817,9 @@ extern "C" void app_main(void) {
 
   startWifi();
   startWebServer();
-  xTaskCreate(cloudPollTask, "cloud_poll", 8192, nullptr, 5, nullptr);
+  if (ENABLE_CLOUD_REMOTE) {
+    xTaskCreate(cloudPollTask, "cloud_poll", 8192, nullptr, 5, nullptr);
+  }
 
   ESP_LOGI(kTag, "ready. local URL: http://192.168.4.1/ when AP is active");
   while (true) {

@@ -5,6 +5,8 @@ firmware-idf/sdkconfig.old
 firmware-idf/managed_components/
 firmware-idf/dependencies.lock
 firmware-idf/.idf_component_manager/
+firmware-idf/*nvs*.bin
+firmware-idf/nvs*.bin
 
 # Editor settings
 .vscode/
