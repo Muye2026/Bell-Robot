@@ -24,6 +24,10 @@ Thumbs.db
 # Logs
 *.log
 
+# Industrial design generated artifacts
+_cad-output/
+_render-raster/
+
 # Cloud relay local files
 cloud-relay/node_modules/
 cloud-relay/.env

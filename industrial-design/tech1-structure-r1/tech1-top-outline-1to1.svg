@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="170mm" height="70mm" viewBox="0 0 170 70">
+  <defs>
+    <style>
+      .cut { stroke: #111827; stroke-width: 0.35; fill: none; }
+      .dash { stroke: #6b7280; stroke-width: 0.2; fill: none; stroke-dasharray: 1.2 0.8; }
+      .text { font: 3px Arial, sans-serif; fill: #111827; }
+      .small { font: 2.2px Arial, sans-serif; fill: #4b5563; }
+      .oled { fill: #dbeafe; stroke: #2563eb; stroke-width: 0.2; }
+      .cam { fill: #e5e7eb; stroke: #111827; stroke-width: 0.2; }
+      .board { fill: #e0f2fe; stroke: #0284c7; stroke-width: 0.2; }
+      .speaker { fill: #fef3c7; stroke: #d97706; stroke-width: 0.2; }
+      .button { fill: #fee2e2; stroke: #dc2626; stroke-width: 0.2; }
+    </style>
+  </defs>
+
+  <rect width="170" height="70" fill="#ffffff"/>
+  <text x="6" y="8" class="text">Bell Robot Tech1 1:1 顶视布局</text>
+  <text x="6" y="12" class="small">打印时保持 100%，单位 mm。</text>
+
+  <g transform="translate(10,18)">
+    <rect x="0" y="0" width="130" height="34" rx="3.6" class="cut"/>
+    <rect x="3" y="1.5" width="124" height="31" rx="2" class="dash"/>
+
+    <rect x="4" y="1.5" width="28" height="28" class="oled"/>
+    <rect x="4" y="8" width="28" height="15" class="dash"/>
+    <text x="6" y="16" class="small">OLED</text>
+
+    <rect x="44" y="8.5" width="14" height="14" class="cam"/>
+    <circle cx="51" cy="15.5" r="4.5" class="dash"/>
+    <text x="43.2" y="27" class="small">Cam</text>
+
+    <rect x="60" y="1.5" width="57" height="28" class="board"/>
+    <text x="75" y="16" class="small">Board 57x28</text>
+
+    <circle cx="108" cy="15.5" r="6" class="speaker"/>
+    <text x="101.5" y="28.2" class="small">Ø12</text>
+
+    <rect x="118" y="12.5" width="6" height="6" class="button"/>
+    <text x="114.7" y="10.2" class="small">SW</text>
+
+    <line x1="0" y1="56" x2="130" y2="56" class="dash"/>
+    <text x="61.8" y="60.5" class="small">130</text>
+
+    <line x1="146" y1="0" x2="146" y2="34" class="dash"/>
+    <text x="148.2" y="18.5" class="small">34</text>
+  </g>
+</svg>

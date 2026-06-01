@@ -1,0 +1,79 @@
+{
+  "version": "tech1-structure-r1",
+  "units": "mm",
+  "origin": "front_body_inner_cavity_top_left",
+  "envelope": {
+    "outer": {
+      "length": 130,
+      "height": 34,
+      "depth_target_min": 17,
+      "depth_target_max": 19
+    },
+    "inner_cavity": {
+      "length": 124,
+      "height": 31
+    },
+    "rear_support_arm": {
+      "rear_extension_min": 32,
+      "rear_extension_max": 38,
+      "tilt_adjust_range_deg": [30, 40]
+    },
+    "camera_pitch_down_deg": [6, 10],
+    "monitor_thickness_target": [8, 35],
+    "thin_monitor_rest_mode": [3, 8]
+  },
+  "components": [
+    {
+      "name": "oled_module",
+      "shape": "rect",
+      "size": { "length": 28, "height": 28 },
+      "placement": { "x": 4, "y": 1.5, "x2": 32, "y2": 29.5 },
+      "z_layer": "mid"
+    },
+    {
+      "name": "oled_active_area",
+      "shape": "rect",
+      "size": { "length": 28, "height": 15 },
+      "placement": { "x": 4, "y": 8, "x2": 32, "y2": 23 },
+      "shell_window": { "length": 29, "height": 16 },
+      "z_layer": "front"
+    },
+    {
+      "name": "camera_module",
+      "shape": "rect",
+      "module_body": { "length": 9, "height": 9 },
+      "structure_envelope": { "length": 14, "height": 14 },
+      "placement": { "x": 44, "y": 8.5, "x2": 58, "y2": 22.5 },
+      "z_layer": "mid_front"
+    },
+    {
+      "name": "dev_board",
+      "shape": "rect",
+      "size": { "length": 57, "height": 28 },
+      "placement": { "x": 60, "y": 1.5, "x2": 117, "y2": 29.5 },
+      "usb_orientation": "toward_right_end",
+      "z_layer": "mid"
+    },
+    {
+      "name": "speaker_or_buzzer",
+      "shape": "circle",
+      "diameter": 12,
+      "placement_center": { "x": 108, "y": 15.5 },
+      "sound_exit": "bottom_or_rear",
+      "z_layer": "lower"
+    },
+    {
+      "name": "tact_switch",
+      "shape": "rect",
+      "size": { "length": 6, "height": 6 },
+      "placement": { "x": 118, "y": 12.5, "x2": 124, "y2": 18.5 },
+      "actuation": "side_button_cap_or_right_end_button_cap",
+      "z_layer": "mid_front"
+    }
+  ],
+  "shell_z_rules": {
+    "front": ["oled_window", "camera_lens_opening", "button_cap"],
+    "mid": ["oled_module", "camera_bracket", "dev_board"],
+    "lower": ["speaker_or_buzzer", "rear_support_joint", "usb_cable_clearance"]
+  }
+}
