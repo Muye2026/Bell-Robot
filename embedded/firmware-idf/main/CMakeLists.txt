@@ -1,6 +1,7 @@
 idf_component_register(
   SRCS
     "main.cpp"
+    "sample_store.cpp"
     "seat_model.cpp"
     "ssd1306_spi.cpp"
   INCLUDE_DIRS "."
@@ -14,4 +15,5 @@ idf_component_register(
     esp_driver_ledc
     nvs_flash
     esp32-camera
+    spiffs
 )

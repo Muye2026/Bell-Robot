@@ -31,10 +31,13 @@
 
 | 按键 | ESP32-S3 默认 GPIO | 说明 |
 | --- | ---: | --- |
-| 一端 | GPIO 1 | `INPUT_PULLUP` |
+| 重置/重校准按钮一端 | GPIO 1 | `INPUT_PULLUP`，按下会消警并重新校准 |
+| 采样按钮一端 | GPIO 2 | `INPUT_PULLUP`，按下保存当前 JPEG + 元数据 |
 | 另一端 | GND | 按下为低电平 |
 
-不默认使用 GPIO0，因为它是 Boot 引脚，可能影响下载模式。
+两个按钮都按“另一端接 GND、GPIO 侧走内部上拉”的接法，不需要改动现有 `GPIO1` 按钮线路，只是额外增加一个接到 `GPIO2` 的按钮。
+
+不默认使用 GPIO0，因为它是 Boot 引脚，可能影响下载模式；也不建议把第二按钮接到 GPIO3 / GPIO45 / GPIO46 这类 strapping 管脚。
 
 ## 摄像头
 

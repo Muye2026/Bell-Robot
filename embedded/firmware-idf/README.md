@@ -43,8 +43,22 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1 -Flash -Port COM1
 - `/settings`：读取/保存倒计时和离场容忍分钟数
 - `/reset`：重置当前计时并重新校准
 - `/label?class=absent|seated`：下载一帧 `8x8` PGM 样本
+- `/samples`：设备侧样本缓存页面，可预览、下载、清空
+- `/samples/list`：样本列表 JSON
+- `/samples/file?id=...`：读取单张 JPEG
+- `/samples/meta?id=...`：读取单张元数据 JSON
+- `/samples/clear`：清空全部缓存样本
+- `/samples/capture`：调试入口，触发一次与第二按钮相同的采样流程
 
 AP-only 模式不注册 `/cloud` 和 `/cloud/forget`。
+
+## 第二按钮采样
+
+- 新增独立采样按钮：`GPIO2 -> 按钮 -> GND`，沿用 `INPUT_PULLUP`。
+- 现有 `GPIO1` 按钮行为不变，仍然负责“消警 + 重新校准”。
+- 第二按钮短按一次后，设备会保存一张当前 `JPEG` 和同名 `.json` 元数据，页面与蜂鸣器会给出成功/失败反馈。
+- 元数据包含 `sample_id`、`boot_ms`、`state`、`present`、`model_prob`、`wifi_mode`、`jpeg_bytes` 等运行时字段。
+- 设备端固定保留最新 `64` 组样本，超出后自动淘汰最旧样本。
 
 ## 分区
 
@@ -52,7 +66,10 @@ AP-only 模式不注册 `/cloud` 和 `/cloud/forget`。
 
 - `nvs`：24KB
 - `phy_init`：4KB
-- `factory`：3MB
+- `factory`：6MB
+- `samples`：4MB SPIFFS，用于暂存 JPEG 和元数据
+
+分区表已变更，烧录时需要重刷 `bootloader + partition_table + app`，不能只刷 app。
 
 ## 当前验证
 
@@ -60,3 +77,4 @@ AP-only 模式不注册 `/cloud` 和 `/cloud/forget`。
 - 2026-05-10：主线摄像头切换为 `DC5640 AF 120度`，固件仍按 OV5640 类接口识别成功。
 - 2026-05-10：STA 云远程模式已验证，设备 `bell-robot-f63910` 可持续在线并返回远程 JPEG。
 - 2026-05-20：新增 `ENABLE_CLOUD_REMOTE=false` 默认 AP-only 模式，便于继续本地开发。
+- 2026-06-03：新增第二按钮采样缓存、`/samples` 页面和 4MB SPIFFS 样本分区。

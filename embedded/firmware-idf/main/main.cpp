@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
+#include <vector>
 
 #include "app_config.h"
 #include "esp_camera.h"
@@ -24,6 +26,7 @@
 #include "lwip/ip4_addr.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "sample_store.h"
 #include "seat_model.h"
 #include "ssd1306_spi.h"
 
@@ -56,6 +59,9 @@ constexpr uint32_t kCloudHttpTimeoutMs = 20000;
 constexpr uint32_t kCloudFailureApFallbackMs = 90000;
 constexpr size_t kMaxCloudResponseBytes = 2048;
 constexpr EventBits_t kWifiConnectedBit = BIT0;
+constexpr uint32_t kTransientDisplayMs = 1000;
+constexpr uint32_t kCaptureBeepOnMs = 100;
+constexpr uint32_t kCaptureBeepOffMs = 90;
 
 enum class TimerState {
   Idle,
@@ -99,6 +105,20 @@ struct PresenceDiagnostics {
   uint16_t diff = 0;
 };
 
+struct BuzzerSequence {
+  bool active = false;
+  bool toneOn = false;
+  uint8_t remainingPhases = 0;
+  uint32_t nextToggleMs = 0;
+  uint32_t onMs = 0;
+  uint32_t offMs = 0;
+};
+
+struct DisplayOverlay {
+  char message[16] = {};
+  uint32_t untilMs = 0;
+};
+
 Ssd1306Spi display;
 SeatModel seatModel;
 TimerContext timerContext;
@@ -112,18 +132,35 @@ esp_netif_t *staNetif = nullptr;
 uint32_t lastDisplayMs = 0;
 uint32_t lastStatusLogMs = 0;
 uint32_t lastButtonChangeMs = 0;
+uint32_t lastCaptureButtonChangeMs = 0;
 uint32_t cloudLastPollMs = 0;
 uint32_t cloudLastSuccessMs = 0;
 uint32_t cloudFirstFailureMs = 0;
 uint32_t rebootAtMs = 0;
 bool lastButtonLevel = true;
+bool lastCaptureButtonLevel = true;
 bool buttonPressedEvent = false;
 bool buttonResetConsumed = false;
+bool captureButtonPressedEvent = false;
+bool captureButtonResetConsumed = false;
 bool buzzerActive = false;
 bool wifiStartedAsSta = false;
 bool wifiStartedAsAp = false;
 uint32_t sampleCounter = 0;
 char cloudLastError[64] = "not_started";
+BuzzerSequence buzzerSequence;
+DisplayOverlay displayOverlay;
+
+esp_err_t sendSamplesList(httpd_req_t *req);
+esp_err_t sendSampleFile(httpd_req_t *req);
+esp_err_t sendSampleMetadata(httpd_req_t *req);
+esp_err_t handleSamplesClear(httpd_req_t *req);
+esp_err_t handleSampleCapture(httpd_req_t *req);
+bool captureFrameAsJpeg(camera_fb_t **outFrame,
+                        uint8_t **outJpgBuffer,
+                        size_t *outJpgLength,
+                        bool *outConverted);
+void releaseCapturedJpeg(camera_fb_t *frame, uint8_t *jpgBuffer, bool converted);
 
 uint32_t millis32() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -690,6 +727,25 @@ void buzzerOff() {
   buzzerActive = false;
 }
 
+void startBuzzerSequence(uint32_t nowMs, uint8_t beeps, uint32_t onMs, uint32_t offMs) {
+  if (beeps == 0) {
+    return;
+  }
+  buzzerSequence.active = true;
+  buzzerSequence.toneOn = true;
+  buzzerSequence.remainingPhases = static_cast<uint8_t>(beeps * 2);
+  buzzerSequence.nextToggleMs = nowMs + onMs;
+  buzzerSequence.onMs = onMs;
+  buzzerSequence.offMs = offMs;
+  buzzerOn();
+}
+
+void showDisplayOverlay(const char *message, uint32_t nowMs, uint32_t durationMs) {
+  safeCopy(displayOverlay.message, sizeof(displayOverlay.message), message);
+  displayOverlay.untilMs = nowMs + durationMs;
+  lastDisplayMs = 0;
+}
+
 void resetTimer() {
   timerContext = TimerContext{};
   buzzerOff();
@@ -769,8 +825,16 @@ void updateTimer(bool isPresent, uint32_t nowMs) {
   }
 }
 
+bool isPinDown(int pin) {
+  return gpio_get_level(static_cast<gpio_num_t>(pin)) == 0;
+}
+
 bool isButtonDown() {
-  return gpio_get_level(static_cast<gpio_num_t>(PIN_BUTTON)) == 0;
+  return isPinDown(PIN_BUTTON);
+}
+
+bool isCaptureButtonDown() {
+  return isPinDown(PIN_CAPTURE_BUTTON);
 }
 
 void updateButton(uint32_t nowMs) {
@@ -792,6 +856,26 @@ void updateButton(uint32_t nowMs) {
   }
 }
 
+void updateCaptureButton(uint32_t nowMs) {
+  const bool currentLevel = !isCaptureButtonDown();
+  if (currentLevel != lastCaptureButtonLevel) {
+    lastCaptureButtonChangeMs = nowMs;
+    lastCaptureButtonLevel = currentLevel;
+    return;
+  }
+
+  if (currentLevel) {
+    captureButtonResetConsumed = false;
+    return;
+  }
+
+  if (!captureButtonResetConsumed &&
+      nowMs - lastCaptureButtonChangeMs > CAPTURE_BUTTON_DEBOUNCE_MS) {
+    captureButtonResetConsumed = true;
+    captureButtonPressedEvent = true;
+  }
+}
+
 void handleButton() {
   if (!buttonPressedEvent) {
     return;
@@ -801,16 +885,110 @@ void handleButton() {
   presenceDetector.recalibrate();
 }
 
-void updateAlertOutput(uint32_t nowMs) {
-  if (timerContext.state != TimerState::Alerting) {
-    buzzerOff();
+bool captureAndStoreSample(const char *source, uint32_t nowMs, char *outId, size_t outIdSize) {
+  camera_fb_t *frame = nullptr;
+  uint8_t *jpgBuffer = nullptr;
+  size_t jpgLength = 0;
+  bool converted = false;
+  if (!captureFrameAsJpeg(&frame, &jpgBuffer, &jpgLength, &converted)) {
+    return false;
+  }
+
+  const PresenceDiagnostics diag = presenceDetector.diagnostics();
+  const uint32_t sequence = sample_store::nextSequence();
+  char sampleId[48] = {};
+  snprintf(sampleId,
+           sizeof(sampleId),
+           "sample_%06lu_%09lu",
+           static_cast<unsigned long>(sequence),
+           static_cast<unsigned long>(nowMs));
+
+  char metadata[640] = {};
+  snprintf(metadata,
+           sizeof(metadata),
+           "{\"sample_id\":\"%s\",\"boot_ms\":%lu,\"source\":\"%s\",\"state\":\"%s\","
+           "\"present\":%s,\"raw_present\":%s,\"model_ready\":%s,\"model_prob\":%.3f,"
+           "\"inference_ms\":%lu,\"wifi_mode\":\"%s\",\"cloud_enabled\":%s,"
+           "\"frame_width\":%u,\"frame_height\":%u,\"jpeg_bytes\":%u}",
+           sampleId,
+           static_cast<unsigned long>(nowMs),
+           source == nullptr ? "button2" : source,
+           stateLabel(timerContext.state),
+           diag.present ? "true" : "false",
+           diag.rawPresent ? "true" : "false",
+           diag.modelReady ? "true" : "false",
+           static_cast<double>(diag.modelProbability),
+           static_cast<unsigned long>(diag.inferenceMs),
+           wifiStartedAsSta ? "sta" : "ap",
+           ENABLE_CLOUD_REMOTE ? "true" : "false",
+           static_cast<unsigned>(frame->width),
+           static_cast<unsigned>(frame->height),
+           static_cast<unsigned>(jpgLength));
+
+  const esp_err_t err = sample_store::save(sampleId, jpgBuffer, jpgLength, metadata);
+  releaseCapturedJpeg(frame, jpgBuffer, converted);
+  if (err != ESP_OK) {
+    ESP_LOGE(kTag, "save sample failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  if (outId != nullptr && outIdSize > 0) {
+    safeCopy(outId, outIdSize, sampleId);
+  }
+  return true;
+}
+
+void handleCaptureButton(uint32_t nowMs) {
+  if (!captureButtonPressedEvent) {
     return;
   }
-  if ((nowMs / 500) % 2 == 0) {
-    buzzerOn();
-  } else {
-    buzzerOff();
+  captureButtonPressedEvent = false;
+
+  char sampleId[48] = {};
+  if (captureAndStoreSample("button2", nowMs, sampleId, sizeof(sampleId))) {
+    startBuzzerSequence(nowMs, 1, kCaptureBeepOnMs, kCaptureBeepOffMs);
+    showDisplayOverlay("CAPTURED", nowMs, kTransientDisplayMs);
+    ESP_LOGI(kTag, "sample saved: %s", sampleId);
+    return;
   }
+
+  startBuzzerSequence(nowMs, 2, kCaptureBeepOnMs, kCaptureBeepOffMs);
+  showDisplayOverlay("SAVE ERR", nowMs, kTransientDisplayMs);
+}
+
+void updateBuzzer(uint32_t nowMs) {
+  if (buzzerSequence.active) {
+    if (static_cast<int32_t>(nowMs - buzzerSequence.nextToggleMs) >= 0) {
+      if (buzzerSequence.remainingPhases > 0) {
+        buzzerSequence.remainingPhases--;
+      }
+      if (buzzerSequence.remainingPhases == 0) {
+        buzzerSequence.active = false;
+        buzzerOff();
+      } else {
+        buzzerSequence.toneOn = !buzzerSequence.toneOn;
+        if (buzzerSequence.toneOn) {
+          buzzerOn();
+          buzzerSequence.nextToggleMs = nowMs + buzzerSequence.onMs;
+        } else {
+          buzzerOff();
+          buzzerSequence.nextToggleMs = nowMs + buzzerSequence.offMs;
+        }
+      }
+    }
+    return;
+  }
+
+  if (timerContext.state == TimerState::Alerting) {
+    if ((nowMs / 500) % 2 == 0) {
+      buzzerOn();
+    } else {
+      buzzerOff();
+    }
+    return;
+  }
+
+  buzzerOff();
 }
 
 void drawDisplay(bool isPresent, uint32_t nowMs) {
@@ -818,6 +996,17 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
     return;
   }
   lastDisplayMs = nowMs;
+
+  if (displayOverlay.untilMs != 0 && static_cast<int32_t>(displayOverlay.untilMs - nowMs) > 0) {
+    display.clear();
+    display.textScaled(centeredTextX(displayOverlay.message, 2), 56, 2, displayOverlay.message);
+    display.flush();
+    return;
+  }
+  if (displayOverlay.untilMs != 0) {
+    displayOverlay.untilMs = 0;
+    displayOverlay.message[0] = '\0';
+  }
 
   const PresenceDiagnostics diag = presenceDetector.diagnostics();
   const uint32_t remainingMs = remainingSitMs(nowMs);
@@ -892,7 +1081,7 @@ void logStatus(bool isPresent, uint32_t nowMs) {
       "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
       "#msg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
       "<h2>Bell Robot Camera</h2><img id='frame' src='/capture?ts=0'>"
-      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a></p>"
+      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a></p>"
       "<form class='settings' onsubmit='saveSettings(event)'>"
       "<label for='sit'>倒计时（分钟）</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
       "<label for='away'>离场容忍（分钟）</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
@@ -919,7 +1108,7 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
       "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
       ".hint{color:#aaa;font-size:14px}#msg,#cloudMsg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
       "<h2>Bell Robot Camera</h2><img id='frame' src='/capture?ts=0'>"
-      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a></p>"
+      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a></p>"
       "<form class='settings' onsubmit='saveSettings(event)'>"
       "<label for='sit'>Timer minutes</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
       "<label for='away'>Away tolerance minutes</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
@@ -946,17 +1135,52 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
 
-esp_err_t sendCapture(httpd_req_t *req) {
+esp_err_t sendSamplesPage(httpd_req_t *req) {
+  static constexpr char html[] =
+      "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>Bell Robot Samples</title><style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}"
+      "main{max-width:980px;margin:20px auto;padding:0 14px}button,a{font-size:16px;padding:10px 14px;margin:6px 6px 6px 0;display:inline-block}"
+      "a{color:#8cc8ff}.toolbar{margin-bottom:12px}.hint{color:#aaa}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}"
+      ".card{border:1px solid #333;background:#181818;padding:12px}.card img{width:100%;height:auto;background:#222;display:block}"
+      ".meta{font-size:13px;line-height:1.5;color:#cfcfcf;word-break:break-word}.status{min-height:24px;color:#9fdb9f}</style></head><body><main>"
+      "<h2>Bell Robot Samples</h2><p class='hint'>Second button and the debug capture endpoint both save JPEG + metadata into device storage.</p>"
+      "<div class='toolbar'><a href='/'>Back</a><button onclick='captureSample()'>Capture Now</button><button onclick='clearSamples()'>Clear All</button><span id='status' class='status'></span></div>"
+      "<div id='summary' class='hint'></div><div id='grid' class='grid'></div>"
+      "<script>"
+      "async function loadSamples(){const status=document.getElementById('status');const summary=document.getElementById('summary');const grid=document.getElementById('grid');status.textContent='Loading...';"
+      "const r=await fetch('/samples/list');if(!r.ok){status.textContent='Load failed';return;}const data=await r.json();summary.textContent='Stored samples: '+data.count;grid.innerHTML='';"
+      "if(!data.items||data.items.length===0){grid.innerHTML='<div class=\"hint\">No samples yet.</div>';status.textContent='';return;}"
+      "for(const item of data.items){const card=document.createElement('div');card.className='card';"
+      "card.innerHTML='<img alt=\"sample\" src=\"'+item.preview_url+'\">'+"
+      "'<p><strong>'+item.id+'</strong></p>'+"
+      "'<div class=\"meta\">state: '+item.state+'<br>present: '+item.present+'<br>model_prob: '+item.model_prob+'<br>wifi_mode: '+item.wifi_mode+'<br>boot_ms: '+item.boot_ms+'<br>jpeg_bytes: '+item.jpeg_bytes+'</div>'+"
+      "'<p><a href=\"'+item.download_url+'\" download>Download JPG</a><a href=\"'+item.meta_url+'\" target=\"_blank\">Metadata</a></p>';"
+      "grid.appendChild(card);}status.textContent='';}"
+      "async function captureSample(){const status=document.getElementById('status');status.textContent='Capturing...';const r=await fetch('/samples/capture',{method:'POST'});"
+      "if(!r.ok){status.textContent='Capture failed';return;}const data=await r.json();status.textContent='Saved '+(data.id||'sample');loadSamples();}"
+      "async function clearSamples(){const status=document.getElementById('status');if(!confirm('Clear all stored samples?')){return;}status.textContent='Clearing...';"
+      "const r=await fetch('/samples/clear',{method:'POST'});status.textContent=r.ok?'Cleared':'Clear failed';if(r.ok){loadSamples();}}"
+      "loadSamples();</script></main></body></html>";
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+}
+
+bool captureFrameAsJpeg(camera_fb_t **outFrame,
+                        uint8_t **outJpgBuffer,
+                        size_t *outJpgLength,
+                        bool *outConverted) {
+  if (outFrame == nullptr || outJpgBuffer == nullptr || outJpgLength == nullptr || outConverted == nullptr) {
+    return false;
+  }
+
   camera_fb_t *frame = esp_camera_fb_get();
   if (frame == nullptr) {
-    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera capture failed");
-    return ESP_FAIL;
+    return false;
   }
 
   uint8_t *jpgBuffer = nullptr;
   size_t jpgLength = 0;
   bool converted = false;
-
   if (frame->format == PIXFORMAT_JPEG) {
     jpgBuffer = frame->buf;
     jpgLength = frame->len;
@@ -964,18 +1188,40 @@ esp_err_t sendCapture(httpd_req_t *req) {
     converted = frame2jpg(frame, 80, &jpgBuffer, &jpgLength);
     if (!converted) {
       esp_camera_fb_return(frame);
-      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "jpeg conversion failed");
-      return ESP_FAIL;
+      return false;
     }
+  }
+
+  *outFrame = frame;
+  *outJpgBuffer = jpgBuffer;
+  *outJpgLength = jpgLength;
+  *outConverted = converted;
+  return true;
+}
+
+void releaseCapturedJpeg(camera_fb_t *frame, uint8_t *jpgBuffer, bool converted) {
+  if (converted && jpgBuffer != nullptr) {
+    free(jpgBuffer);
+  }
+  if (frame != nullptr) {
+    esp_camera_fb_return(frame);
+  }
+}
+
+esp_err_t sendCapture(httpd_req_t *req) {
+  camera_fb_t *frame = nullptr;
+  uint8_t *jpgBuffer = nullptr;
+  size_t jpgLength = 0;
+  bool converted = false;
+  if (!captureFrameAsJpeg(&frame, &jpgBuffer, &jpgLength, &converted)) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera capture failed");
+    return ESP_FAIL;
   }
 
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   const esp_err_t err = httpd_resp_send(req, reinterpret_cast<const char *>(jpgBuffer), jpgLength);
-  if (converted) {
-    free(jpgBuffer);
-  }
-  esp_camera_fb_return(frame);
+  releaseCapturedJpeg(frame, jpgBuffer, converted);
   return err;
 }
 
@@ -1324,7 +1570,7 @@ esp_err_t handleLabel(httpd_req_t *req) {
 void startWebServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 8192;
-  config.max_uri_handlers = 12;
+  config.max_uri_handlers = 20;
   ESP_ERROR_CHECK(httpd_start(&httpServer, &config));
 
   httpd_uri_t index = {};
@@ -1362,6 +1608,36 @@ void startWebServer() {
   label.method = HTTP_GET;
   label.handler = handleLabel;
 
+  httpd_uri_t samplesPage = {};
+  samplesPage.uri = "/samples";
+  samplesPage.method = HTTP_GET;
+  samplesPage.handler = sendSamplesPage;
+
+  httpd_uri_t samplesList = {};
+  samplesList.uri = "/samples/list";
+  samplesList.method = HTTP_GET;
+  samplesList.handler = sendSamplesList;
+
+  httpd_uri_t sampleFile = {};
+  sampleFile.uri = "/samples/file";
+  sampleFile.method = HTTP_GET;
+  sampleFile.handler = sendSampleFile;
+
+  httpd_uri_t sampleMeta = {};
+  sampleMeta.uri = "/samples/meta";
+  sampleMeta.method = HTTP_GET;
+  sampleMeta.handler = sendSampleMetadata;
+
+  httpd_uri_t samplesClear = {};
+  samplesClear.uri = "/samples/clear";
+  samplesClear.method = HTTP_POST;
+  samplesClear.handler = handleSamplesClear;
+
+  httpd_uri_t samplesCapture = {};
+  samplesCapture.uri = "/samples/capture";
+  samplesCapture.method = HTTP_POST;
+  samplesCapture.handler = handleSampleCapture;
+
   httpd_uri_t cloudGet = {};
   cloudGet.uri = "/cloud";
   cloudGet.method = HTTP_GET;
@@ -1384,6 +1660,12 @@ void startWebServer() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &settingsGet));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &settingsPost));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &label));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &samplesPage));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &samplesList));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &sampleFile));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &sampleMeta));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &samplesClear));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &samplesCapture));
   if (ENABLE_CLOUD_REMOTE) {
     ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudGet));
     ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudPost));
@@ -1638,6 +1920,210 @@ bool jsonFindUint(const char *json, const char *key, uint32_t *out) {
   return true;
 }
 
+bool jsonFindBool(const char *json, const char *key, bool *out) {
+  if (json == nullptr || key == nullptr || out == nullptr) {
+    return false;
+  }
+  char pattern[40] = {};
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  const char *start = strstr(json, pattern);
+  if (start == nullptr) {
+    return false;
+  }
+  start += strlen(pattern);
+  if (strncmp(start, "true", 4) == 0) {
+    *out = true;
+    return true;
+  }
+  if (strncmp(start, "false", 5) == 0) {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+bool jsonFindFloat(const char *json, const char *key, float *out) {
+  if (json == nullptr || key == nullptr || out == nullptr) {
+    return false;
+  }
+  char pattern[40] = {};
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  const char *start = strstr(json, pattern);
+  if (start == nullptr) {
+    return false;
+  }
+  start += strlen(pattern);
+  char *end = nullptr;
+  const double value = strtod(start, &end);
+  if (end == start) {
+    return false;
+  }
+  *out = static_cast<float>(value);
+  return true;
+}
+
+const char *querySampleId(httpd_req_t *req, char *buffer, size_t bufferSize) {
+  if (httpd_req_get_url_query_str(req, buffer, bufferSize) != ESP_OK) {
+    return nullptr;
+  }
+  static char idValue[64] = {};
+  if (httpd_query_key_value(buffer, "id", idValue, sizeof(idValue)) != ESP_OK) {
+    return nullptr;
+  }
+  for (char *cursor = idValue; *cursor != '\0'; ++cursor) {
+    const char c = *cursor;
+    const bool valid = (c >= 'a' && c <= 'z') ||
+                       (c >= 'A' && c <= 'Z') ||
+                       (c >= '0' && c <= '9') ||
+                       c == '_' ||
+                       c == '-';
+    if (!valid) {
+      return nullptr;
+    }
+  }
+  return idValue;
+}
+
+esp_err_t sendSamplesList(httpd_req_t *req) {
+  std::vector<std::string> ids;
+  const esp_err_t listErr = sample_store::listIds(&ids);
+  if (listErr != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sample list failed");
+    return ESP_FAIL;
+  }
+
+  std::string payload;
+  payload.reserve(16384);
+  payload += "{\"count\":";
+  payload += std::to_string(ids.size());
+  payload += ",\"items\":[";
+
+  bool first = true;
+  for (auto it = ids.rbegin(); it != ids.rend(); ++it) {
+    std::string metadata;
+    if (sample_store::loadMetadata(it->c_str(), &metadata) != ESP_OK) {
+      continue;
+    }
+
+    char state[16] = {};
+    char wifiMode[8] = {};
+    bool present = false;
+    uint32_t bootMs = 0;
+    uint32_t jpegBytes = 0;
+    float modelProb = 0.0f;
+    jsonFindString(metadata.c_str(), "state", state, sizeof(state));
+    jsonFindString(metadata.c_str(), "wifi_mode", wifiMode, sizeof(wifiMode));
+    jsonFindBool(metadata.c_str(), "present", &present);
+    jsonFindUint(metadata.c_str(), "boot_ms", &bootMs);
+    jsonFindUint(metadata.c_str(), "jpeg_bytes", &jpegBytes);
+    jsonFindFloat(metadata.c_str(), "model_prob", &modelProb);
+
+    char item[512] = {};
+    snprintf(item,
+             sizeof(item),
+             "%s{\"id\":\"%s\",\"state\":\"%s\",\"present\":%s,"
+             "\"model_prob\":%.3f,\"wifi_mode\":\"%s\",\"boot_ms\":%lu,"
+             "\"jpeg_bytes\":%lu,\"preview_url\":\"/samples/file?id=%s\","
+             "\"download_url\":\"/samples/file?id=%s\",\"meta_url\":\"/samples/meta?id=%s\"}",
+             first ? "" : ",",
+             it->c_str(),
+             state[0] == '\0' ? "-" : state,
+             present ? "true" : "false",
+             static_cast<double>(modelProb),
+             wifiMode[0] == '\0' ? "-" : wifiMode,
+             static_cast<unsigned long>(bootMs),
+             static_cast<unsigned long>(jpegBytes),
+             it->c_str(),
+             it->c_str(),
+             it->c_str());
+    payload += item;
+    first = false;
+  }
+  payload += "]}";
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_send(req, payload.c_str(), payload.size());
+}
+
+esp_err_t sendSampleFile(httpd_req_t *req) {
+  char query[96] = {};
+  const char *id = querySampleId(req, query, sizeof(query));
+  if (id == nullptr) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing id");
+    return ESP_FAIL;
+  }
+
+  std::vector<uint8_t> jpegData;
+  const esp_err_t err = sample_store::loadJpeg(id, &jpegData);
+  if (err == ESP_ERR_NOT_FOUND) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "sample not found");
+    return ESP_FAIL;
+  }
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sample read failed");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_send(req,
+                         reinterpret_cast<const char *>(jpegData.data()),
+                         jpegData.size());
+}
+
+esp_err_t sendSampleMetadata(httpd_req_t *req) {
+  char query[96] = {};
+  const char *id = querySampleId(req, query, sizeof(query));
+  if (id == nullptr) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing id");
+    return ESP_FAIL;
+  }
+
+  std::string metadata;
+  const esp_err_t err = sample_store::loadMetadata(id, &metadata);
+  if (err == ESP_ERR_NOT_FOUND) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "sample not found");
+    return ESP_FAIL;
+  }
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "metadata read failed");
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_send(req, metadata.c_str(), metadata.size());
+}
+
+esp_err_t handleSamplesClear(httpd_req_t *req) {
+  const esp_err_t err = sample_store::clear();
+  if (err != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sample clear failed");
+    return ESP_FAIL;
+  }
+  return httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t handleSampleCapture(httpd_req_t *req) {
+  const uint32_t nowMs = millis32();
+  char sampleId[48] = {};
+  if (!captureAndStoreSample("button2", nowMs, sampleId, sizeof(sampleId))) {
+    startBuzzerSequence(nowMs, 2, kCaptureBeepOnMs, kCaptureBeepOffMs);
+    showDisplayOverlay("SAVE ERR", nowMs, kTransientDisplayMs);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "capture failed");
+    return ESP_FAIL;
+  }
+
+  startBuzzerSequence(nowMs, 1, kCaptureBeepOnMs, kCaptureBeepOffMs);
+  showDisplayOverlay("CAPTURED", nowMs, kTransientDisplayMs);
+
+  char payload[96] = {};
+  snprintf(payload, sizeof(payload), "{\"ok\":true,\"id\":\"%s\"}", sampleId);
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, payload, HTTPD_RESP_USE_STRLEN);
+}
+
 void postCommandResult(const char *commandId, bool ok, const char *message) {
   char path[] = "device/result";
   char body[256] = {};
@@ -1658,24 +2144,11 @@ void postCommandResult(const char *commandId, bool ok, const char *message) {
 }
 
 bool captureJpegForCloud(const char *commandId) {
-  camera_fb_t *frame = esp_camera_fb_get();
-  if (frame == nullptr) {
-    return false;
-  }
-
+  camera_fb_t *frame = nullptr;
   uint8_t *jpgBuffer = nullptr;
   size_t jpgLength = 0;
   bool converted = false;
-
-  if (frame->format == PIXFORMAT_JPEG) {
-    jpgBuffer = frame->buf;
-    jpgLength = frame->len;
-  } else {
-    converted = frame2jpg(frame, 80, &jpgBuffer, &jpgLength);
-  }
-
-  if (jpgBuffer == nullptr || jpgLength == 0) {
-    esp_camera_fb_return(frame);
+  if (!captureFrameAsJpeg(&frame, &jpgBuffer, &jpgLength, &converted)) {
     return false;
   }
 
@@ -1687,10 +2160,7 @@ bool captureJpegForCloud(const char *commandId) {
            commandId == nullptr ? "" : commandId);
   char response[256] = {};
   const esp_err_t err = cloudPost(path, "image/jpeg", jpgBuffer, jpgLength, response, sizeof(response));
-  if (converted) {
-    free(jpgBuffer);
-  }
-  esp_camera_fb_return(frame);
+  releaseCapturedJpeg(frame, jpgBuffer, converted);
   return err == ESP_OK;
 }
 
@@ -1783,12 +2253,13 @@ void cloudPollTask(void *arg) {
 
 void setupButton() {
   gpio_config_t io = {};
-  io.pin_bit_mask = 1ULL << PIN_BUTTON;
+  io.pin_bit_mask = (1ULL << PIN_BUTTON) | (1ULL << PIN_CAPTURE_BUTTON);
   io.mode = GPIO_MODE_INPUT;
   io.pull_up_en = GPIO_PULLUP_ENABLE;
   io.pull_down_en = GPIO_PULLDOWN_DISABLE;
   gpio_config(&io);
   lastButtonLevel = !isButtonDown();
+  lastCaptureButtonLevel = !isCaptureButtonDown();
 }
 } // namespace
 
@@ -1802,6 +2273,7 @@ extern "C" void app_main(void) {
   }
   buzzerBegin();
   setupButton();
+  ESP_ERROR_CHECK(sample_store::init());
   display.begin();
   display.text(0, 0, "BELL");
   display.text(0, 1, "START");
@@ -1829,9 +2301,11 @@ extern "C" void app_main(void) {
     }
     const bool isPresent = presenceDetector.update(nowMs);
     updateButton(nowMs);
+    updateCaptureButton(nowMs);
     handleButton();
+    handleCaptureButton(nowMs);
     updateTimer(isPresent, nowMs);
-    updateAlertOutput(nowMs);
+    updateBuzzer(nowMs);
     drawDisplay(isPresent, nowMs);
     logStatus(isPresent, nowMs);
     vTaskDelay(pdMS_TO_TICKS(20));

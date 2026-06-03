@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 // Core timing policy.
@@ -24,9 +25,12 @@ static constexpr int PIN_OLED_RESET = 40;
 // Output and input.
 static constexpr int PIN_BUZZER = 21;
 static constexpr int PIN_BUTTON = 1;
+static constexpr int PIN_CAPTURE_BUTTON = 2;
 static constexpr uint32_t BUTTON_DEBOUNCE_MS = 40;
+static constexpr uint32_t CAPTURE_BUTTON_DEBOUNCE_MS = 40;
 static constexpr uint32_t BUZZER_FREQUENCY_HZ = 2400;
 static constexpr uint32_t BUZZER_DUTY = 128;
+static constexpr size_t SAMPLE_STORE_MAX_COUNT = 64;
 
 // Camera preview AP.
 static constexpr char CAMERA_PREVIEW_AP_SSID[] = "Bell-Robot";

@@ -13,7 +13,8 @@
 flowchart LR
   Camera["DC5640 AF 120度"] --> MCU["ESP32-S3 N16R8 CAM"]
   OLED["SPI SSD1306 OLED"] <--> MCU
-  Button["Reset Button"] --> MCU
+  ResetButton["GPIO1 Reset Button"] --> MCU
+  SampleButton["GPIO2 Sample Button"] --> MCU
   MCU --> Buzzer["Buzzer"]
   USB["USB 5V"] --> MCU
   Router["2.4G Wi-Fi"] <--> MCU
@@ -26,8 +27,10 @@ flowchart LR
 - `seat_model`：对 `8x8` 灰度特征做本地 int8 二分类，输出桌前坐姿概率。
 - `presence_detector`：模型优先，模型不可用时回退 ROI 灰度差分，并做连续帧去抖。
 - `sedentary_timer`：处理待机、计时、暂离暂停、超时重置和提醒状态。
+- `button_input`：保留 `GPIO1` 的消警/重校准逻辑，并新增 `GPIO2` 采样按钮短按触发。
+- `sample_store`：把第二按钮抓到的 JPEG 和元数据写入 SPIFFS，固定保留最新 64 组样本。
 - `display_ui`：OLED 只显示状态、倒计时和 `PROB xx%`。
-- `web_api`：本地 AP 调试接口，包括 `/capture`、`/status`、`/settings`、`/cloud`、`/reset`、`/label`。
+- `web_api`：本地 AP 调试接口，包括 `/capture`、`/status`、`/settings`、`/cloud`、`/reset`、`/label`、`/samples`、`/samples/list`、`/samples/file`、`/samples/meta`、`/samples/clear`、`/samples/capture`。
 - `cloud_client`：STA 联网后每秒轮询云中转，上报状态并执行云端命令。
 
 ## 设备身份

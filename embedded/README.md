@@ -5,7 +5,7 @@ ESP32-S3 久坐提醒器固件。设备本地完成坐姿识别、倒计时、OL
 ## 当前主线
 
 - 固件：`firmware-idf/`
-- 硬件：Freenove ESP32-S3 N16R8 CAM + DC5640 AF 120度 + SPI SSD1306 OLED + 蜂鸣器 + 单按键
+- 硬件：Freenove ESP32-S3 N16R8 CAM + DC5640 AF 120度 + SPI SSD1306 OLED + 蜂鸣器 + 双按键
 - 网络：当前默认 AP-only，热点名 `Bell-Robot`，密码 `12345678`
 - 云端：`cloud-relay/` 仍保留；将 `ENABLE_CLOUD_REMOTE` 改为 `true` 后可恢复 STA 云远程
 - 设备身份：远程模式下 `device_id` 根据芯片 MAC 自动生成；设备 token 保存在 NVS，AP-only 不会清除这些配置
@@ -15,9 +15,17 @@ ESP32-S3 久坐提醒器固件。设备本地完成坐姿识别、倒计时、OL
 
 1. 手机连接设备热点 `Bell-Robot`。
 2. 打开 `http://192.168.4.1/`。
-3. 使用本地网页查看摄像头、调整倒计时/离场容忍、重置设备或采集样本。
+3. 使用本地网页查看摄像头、调整倒计时/离场容忍、重置设备或进入 `/samples` 管理采样缓存。
 
 当前 AP-only 固件不会自动连接路由器 Wi-Fi，也不会轮询云服务器。
+
+## 第二按钮采样缓存
+
+- `GPIO1` 保持现有用途：消警 + 重新校准。
+- 新增 `GPIO2` 采样按钮：短按一次保存当前 `JPEG` 和同名元数据到设备 SPIFFS。
+- 样本不自动打标签，先按 `raw` 数据保存，后续在电脑侧再筛选整理。
+- 设备固定保留最新 `64` 组样本；手机连接设备后可在 `/samples` 页面预览、下载、清空。
+- 调试时也可以直接调用 `POST /samples/capture` 触发同一套采样流程。
 
 ## 切回云端远程
 
@@ -34,6 +42,8 @@ cd D:\Project\Bell-Robot\embedded\firmware-idf
 powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1
 powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1 -Flash -Port COM13
 ```
+
+注意：样本缓存功能新增了 `samples` SPIFFS 分区，烧录时需要跟随 `partition-table.bin` 一起完整重刷，不是只刷 app。
 
 ## 模型训练
 
@@ -56,3 +66,4 @@ python model\train_seat_model.py --dataset model\dataset --out embedded\firmware
 - 2026-05-01：云中转改为多设备管理，取消网页登录密码；固件自动生成 `device_id` 和隐藏 token。
 - 2026-05-10：主线摄像头切换为 `DC5640 AF 120度`，固件仍按 OV5640 类接口识别成功。
 - 2026-05-20：新增 `ENABLE_CLOUD_REMOTE` 编译开关，当前默认 AP-only，用于本地开发。
+- 2026-06-03：新增第二按钮样本缓存，设备侧支持 `/samples` 预览、下载与清空。

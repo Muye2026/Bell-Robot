@@ -1,5 +1,8 @@
 # Model training generated data
 model/dataset/**/*.pgm
+model/dataset/**/*.jpg
+model/dataset/**/*.jpeg
+model/dataset/**/*.json
 model/open_seed/
 model/*overview*.jpg
 model/candidate_preview/raw/
