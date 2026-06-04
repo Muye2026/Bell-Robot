@@ -50,6 +50,7 @@ static constexpr bool ENABLE_CLOUD_REMOTE = false;
 // re-verified against the actual module if capture orientation or wiring looks off.
 static constexpr bool CAMERA_VFLIP = true;
 static constexpr bool CAMERA_HMIRROR = false;
+static constexpr bool CAMERA_ROTATE_CW_90 = true;
 
 // Presence detector tuning.
 static constexpr uint32_t CAMERA_SAMPLE_INTERVAL_MS = 500;

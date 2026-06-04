@@ -7,9 +7,11 @@
 
 #include "app_config.h"
 #include "esp_camera.h"
+#include "esp_camera_af.h"
 #include "esp_check.h"
 #include "esp_crt_bundle.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -21,6 +23,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "img_converters.h"
 #include "lwip/ip4_addr.h"
@@ -62,6 +65,18 @@ constexpr EventBits_t kWifiConnectedBit = BIT0;
 constexpr uint32_t kTransientDisplayMs = 1000;
 constexpr uint32_t kCaptureBeepOnMs = 100;
 constexpr uint32_t kCaptureBeepOffMs = 90;
+constexpr framesize_t kCameraFrameSize = FRAMESIZE_QVGA;
+constexpr uint16_t kCameraFrameWidth = 320;
+constexpr uint16_t kCameraFrameHeight = 240;
+constexpr framesize_t kCameraCaptureFrameSize = FRAMESIZE_VGA;
+constexpr uint16_t kCameraCaptureFrameWidth = 640;
+constexpr uint16_t kCameraCaptureFrameHeight = 480;
+constexpr uint8_t kCameraJpegQuality = 90;
+constexpr uint8_t kCameraSensorJpegQuality = 12;
+constexpr uint32_t kCameraStreamFrameDelayMs = 1;
+constexpr uint32_t kCameraStreamLogFrames = 60;
+const TickType_t kCameraMutexTimeoutTicks = pdMS_TO_TICKS(1500);
+constexpr uint32_t kCameraAfTimeoutMs = 3000;
 
 enum class TimerState {
   Idle,
@@ -119,6 +134,13 @@ struct DisplayOverlay {
   uint32_t untilMs = 0;
 };
 
+struct CapturedCameraFrame {
+  camera_fb_t *rawFrame = nullptr;
+  camera_fb_t logicalFrame = {};
+  uint8_t *ownedBuffer = nullptr;
+  bool cameraLocked = false;
+};
+
 Ssd1306Spi display;
 SeatModel seatModel;
 TimerContext timerContext;
@@ -126,6 +148,7 @@ TimerSettings timerSettings;
 CloudSettings cloudSettings;
 httpd_handle_t httpServer = nullptr;
 EventGroupHandle_t wifiEventGroup = nullptr;
+SemaphoreHandle_t cameraMutex = nullptr;
 esp_netif_t *apNetif = nullptr;
 esp_netif_t *staNetif = nullptr;
 
@@ -156,14 +179,292 @@ esp_err_t sendSampleFile(httpd_req_t *req);
 esp_err_t sendSampleMetadata(httpd_req_t *req);
 esp_err_t handleSamplesClear(httpd_req_t *req);
 esp_err_t handleSampleCapture(httpd_req_t *req);
-bool captureFrameAsJpeg(camera_fb_t **outFrame,
+bool captureCameraFrame(CapturedCameraFrame *capture, framesize_t frameSize = kCameraFrameSize);
+void releaseCameraFrame(CapturedCameraFrame *capture);
+bool lockCamera(CapturedCameraFrame *capture);
+void unlockCamera(CapturedCameraFrame *capture);
+bool captureFrameAsJpeg(CapturedCameraFrame *capture,
                         uint8_t **outJpgBuffer,
                         size_t *outJpgLength,
-                        bool *outConverted);
-void releaseCapturedJpeg(camera_fb_t *frame, uint8_t *jpgBuffer, bool converted);
+                        bool *outConverted,
+                        uint8_t jpegQuality = kCameraJpegQuality,
+                        framesize_t frameSize = kCameraCaptureFrameSize);
+void releaseCapturedJpeg(CapturedCameraFrame *capture, uint8_t *jpgBuffer, bool converted);
+bool setCameraFrameSize(framesize_t frameSize);
+void configureCameraSensor(sensor_t *sensor);
+void configureCameraAutofocus(sensor_t *sensor);
 
 uint32_t millis32() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+}
+
+size_t cameraBytesPerPixel(pixformat_t format) {
+  switch (format) {
+  case PIXFORMAT_GRAYSCALE:
+    return 1;
+  case PIXFORMAT_RGB565:
+    return 2;
+  default:
+    return 0;
+  }
+}
+
+bool lockCamera(CapturedCameraFrame *capture) {
+  if (capture == nullptr) {
+    return false;
+  }
+  if (cameraMutex == nullptr) {
+    capture->cameraLocked = true;
+    return true;
+  }
+  if (xSemaphoreTake(cameraMutex, kCameraMutexTimeoutTicks) != pdTRUE) {
+    return false;
+  }
+  capture->cameraLocked = true;
+  return true;
+}
+
+void unlockCamera(CapturedCameraFrame *capture) {
+  if (capture == nullptr || !capture->cameraLocked) {
+    return;
+  }
+  capture->cameraLocked = false;
+  if (cameraMutex != nullptr) {
+    xSemaphoreGive(cameraMutex);
+  }
+}
+
+bool setCameraFrameSize(framesize_t frameSize) {
+  sensor_t *sensor = esp_camera_sensor_get();
+  if (sensor == nullptr || sensor->set_framesize == nullptr) {
+    return false;
+  }
+  if (sensor->status.framesize == frameSize) {
+    return true;
+  }
+  if (sensor->set_framesize(sensor, frameSize) != 0) {
+    ESP_LOGW(kTag, "camera set framesize failed: %d", static_cast<int>(frameSize));
+    return false;
+  }
+  vTaskDelay(pdMS_TO_TICKS(80));
+  return true;
+}
+
+uint8_t frameLumaAt(const camera_fb_t *frame, size_t x, size_t y) {
+  if (frame == nullptr || frame->buf == nullptr || x >= frame->width || y >= frame->height) {
+    return 0;
+  }
+
+  const size_t pixelIndex = y * frame->width + x;
+  if (frame->format == PIXFORMAT_GRAYSCALE) {
+    return pixelIndex < frame->len ? frame->buf[pixelIndex] : 0;
+  }
+
+  if (frame->format == PIXFORMAT_RGB565) {
+    const size_t byteIndex = pixelIndex * 2;
+    if (byteIndex + 1 >= frame->len) {
+      return 0;
+    }
+    const uint8_t high = frame->buf[byteIndex];
+    const uint8_t low = frame->buf[byteIndex + 1];
+    const uint8_t r = high & 0xf8;
+    const uint8_t g = static_cast<uint8_t>(((high & 0x07) << 5) | ((low & 0xe0) >> 3));
+    const uint8_t b = static_cast<uint8_t>((low & 0x1f) << 3);
+    return static_cast<uint8_t>((static_cast<uint16_t>(r) * 30 +
+                                 static_cast<uint16_t>(g) * 59 +
+                                 static_cast<uint16_t>(b) * 11) /
+                                100);
+  }
+
+  return 0;
+}
+
+bool captureCameraFrame(CapturedCameraFrame *capture, framesize_t frameSize) {
+  if (capture == nullptr) {
+    return false;
+  }
+
+  releaseCameraFrame(capture);
+  if (!lockCamera(capture)) {
+    ESP_LOGW(kTag, "camera lock timeout");
+    return false;
+  }
+
+  if (!setCameraFrameSize(frameSize)) {
+    releaseCameraFrame(capture);
+    return false;
+  }
+
+  camera_fb_t *rawFrame = esp_camera_fb_get();
+  if (rawFrame == nullptr) {
+    if (frameSize != kCameraFrameSize) {
+      setCameraFrameSize(kCameraFrameSize);
+    }
+    releaseCameraFrame(capture);
+    return false;
+  }
+
+  capture->rawFrame = rawFrame;
+  capture->logicalFrame = *rawFrame;
+  if (frameSize != kCameraFrameSize) {
+    setCameraFrameSize(kCameraFrameSize);
+  }
+
+  if (rawFrame->format == PIXFORMAT_JPEG) {
+    const size_t decodedLength = static_cast<size_t>(rawFrame->width) *
+                                 static_cast<size_t>(rawFrame->height) *
+                                 cameraBytesPerPixel(PIXFORMAT_RGB565);
+    uint8_t *decoded = static_cast<uint8_t *>(heap_caps_malloc(decodedLength, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (decoded == nullptr) {
+      decoded = static_cast<uint8_t *>(heap_caps_malloc(decodedLength, MALLOC_CAP_8BIT));
+    }
+    if (decoded == nullptr) {
+      ESP_LOGE(kTag, "camera JPEG decode buffer allocation failed: %u bytes",
+               static_cast<unsigned>(decodedLength));
+      releaseCameraFrame(capture);
+      return false;
+    }
+
+    if (!jpg2rgb565(rawFrame->buf, rawFrame->len, decoded, JPG_SCALE_NONE)) {
+      ESP_LOGE(kTag, "camera JPEG decode failed");
+      free(decoded);
+      releaseCameraFrame(capture);
+      return false;
+    }
+
+    capture->ownedBuffer = decoded;
+    capture->logicalFrame.buf = decoded;
+    capture->logicalFrame.len = decodedLength;
+    capture->logicalFrame.width = rawFrame->width;
+    capture->logicalFrame.height = rawFrame->height;
+    capture->logicalFrame.format = PIXFORMAT_RGB565;
+  }
+
+  if (!CAMERA_ROTATE_CW_90) {
+    return true;
+  }
+
+  const camera_fb_t sourceFrame = capture->logicalFrame;
+  const size_t bytesPerPixel = cameraBytesPerPixel(sourceFrame.format);
+  if (bytesPerPixel == 0 || sourceFrame.width == 0 || sourceFrame.height == 0) {
+    ESP_LOGE(kTag, "camera rotate requires supported frame format with dimensions: format=%d",
+             static_cast<int>(sourceFrame.format));
+    releaseCameraFrame(capture);
+    return false;
+  }
+
+  const size_t sourceWidth = sourceFrame.width;
+  const size_t sourceHeight = sourceFrame.height;
+  const size_t pixelCount = sourceWidth * sourceHeight;
+  const size_t dataLength = pixelCount * bytesPerPixel;
+  if (sourceFrame.len < dataLength) {
+    ESP_LOGE(kTag, "camera frame too small for rotation: len=%u expected=%u",
+             static_cast<unsigned>(sourceFrame.len),
+             static_cast<unsigned>(dataLength));
+    releaseCameraFrame(capture);
+    return false;
+  }
+
+  uint8_t *rotated = static_cast<uint8_t *>(heap_caps_malloc(dataLength, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (rotated == nullptr) {
+    rotated = static_cast<uint8_t *>(heap_caps_malloc(dataLength, MALLOC_CAP_8BIT));
+  }
+  if (rotated == nullptr) {
+    ESP_LOGE(kTag, "camera rotate buffer allocation failed: %u bytes", static_cast<unsigned>(dataLength));
+    releaseCameraFrame(capture);
+    return false;
+  }
+
+  for (size_t y = 0; y < sourceHeight; ++y) {
+    for (size_t x = 0; x < sourceWidth; ++x) {
+      const size_t targetX = sourceHeight - 1 - y;
+      const size_t targetY = x;
+      const size_t sourceIndex = (y * sourceWidth + x) * bytesPerPixel;
+      const size_t targetIndex = (targetY * sourceHeight + targetX) * bytesPerPixel;
+      memcpy(rotated + targetIndex, sourceFrame.buf + sourceIndex, bytesPerPixel);
+    }
+  }
+
+  uint8_t *previousOwnedBuffer = capture->ownedBuffer;
+  capture->ownedBuffer = rotated;
+  capture->logicalFrame.buf = rotated;
+  capture->logicalFrame.len = dataLength;
+  capture->logicalFrame.width = sourceHeight;
+  capture->logicalFrame.height = sourceWidth;
+  capture->logicalFrame.format = sourceFrame.format;
+  if (previousOwnedBuffer != nullptr) {
+    free(previousOwnedBuffer);
+  }
+  return true;
+}
+
+void releaseCameraFrame(CapturedCameraFrame *capture) {
+  if (capture == nullptr) {
+    return;
+  }
+  if (capture->ownedBuffer != nullptr) {
+    free(capture->ownedBuffer);
+  }
+  if (capture->rawFrame != nullptr) {
+    esp_camera_fb_return(capture->rawFrame);
+  }
+  unlockCamera(capture);
+  capture->rawFrame = nullptr;
+  capture->logicalFrame = {};
+  capture->ownedBuffer = nullptr;
+  capture->cameraLocked = false;
+}
+
+void configureCameraSensor(sensor_t *sensor) {
+  if (sensor == nullptr) {
+    return;
+  }
+  sensor->set_vflip(sensor, CAMERA_VFLIP ? 1 : 0);
+  sensor->set_hmirror(sensor, CAMERA_HMIRROR ? 1 : 0);
+  sensor->set_framesize(sensor, kCameraFrameSize);
+  sensor->set_whitebal(sensor, 1);
+  sensor->set_gain_ctrl(sensor, 1);
+  sensor->set_exposure_ctrl(sensor, 1);
+  sensor->set_brightness(sensor, 0);
+  sensor->set_saturation(sensor, 1);
+  sensor->set_contrast(sensor, 1);
+  sensor->set_sharpness(sensor, 2);
+  sensor->set_denoise(sensor, 1);
+}
+
+void configureCameraAutofocus(sensor_t *sensor) {
+  if (sensor == nullptr) {
+    return;
+  }
+  if (!esp_camera_af_is_supported(sensor)) {
+    ESP_LOGW(kTag, "camera autofocus not supported by current sensor/driver config");
+    return;
+  }
+
+  const esp_camera_af_config_t afConfig = {
+      .mode = ESP_CAMERA_AF_MODE_AUTO,
+      .step_size = 0,
+      .range_min = 0,
+      .range_max = 0,
+      .timeout_ms = kCameraAfTimeoutMs,
+  };
+  esp_err_t err = esp_camera_af_init(sensor, &afConfig);
+  if (err != ESP_OK) {
+    ESP_LOGW(kTag, "camera autofocus init failed: %s", esp_err_to_name(err));
+    return;
+  }
+
+  esp_camera_af_status_t status = {};
+  err = esp_camera_af_wait(sensor, kCameraAfTimeoutMs, &status);
+  if (err == ESP_OK) {
+    ESP_LOGI(kTag,
+             "camera autofocus ready: raw=%u focused=%c busy=%c",
+             static_cast<unsigned>(status.raw),
+             status.focused ? 'Y' : 'N',
+             status.busy ? 'Y' : 'N');
+  } else {
+    ESP_LOGW(kTag, "camera autofocus wait failed: %s", esp_err_to_name(err));
+  }
 }
 
 const char *stateLabel(TimerState state) {
@@ -464,6 +765,13 @@ class PresenceDetector {
 public:
   bool begin() {
     modelReady_ = seatModel.begin();
+    if (cameraMutex == nullptr) {
+      cameraMutex = xSemaphoreCreateMutex();
+      if (cameraMutex == nullptr) {
+        ESP_LOGE(kTag, "camera mutex allocation failed");
+        return false;
+      }
+    }
 
     camera_config_t cameraConfig = {};
     cameraConfig.ledc_channel = LEDC_CHANNEL_0;
@@ -485,12 +793,12 @@ public:
     cameraConfig.pin_pwdn = PIN_CAM_PWDN;
     cameraConfig.pin_reset = PIN_CAM_RESET;
     cameraConfig.xclk_freq_hz = 20000000;
-    cameraConfig.frame_size = FRAMESIZE_QVGA;
-    cameraConfig.pixel_format = PIXFORMAT_GRAYSCALE;
+    cameraConfig.frame_size = kCameraFrameSize;
+    cameraConfig.pixel_format = PIXFORMAT_JPEG;
     cameraConfig.grab_mode = CAMERA_GRAB_LATEST;
     cameraConfig.fb_location = CAMERA_FB_IN_PSRAM;
-    cameraConfig.jpeg_quality = 12;
-    cameraConfig.fb_count = 2;
+    cameraConfig.jpeg_quality = kCameraSensorJpegQuality;
+    cameraConfig.fb_count = 3;
 
     const esp_err_t err = esp_camera_init(&cameraConfig);
     if (err != ESP_OK) {
@@ -500,11 +808,16 @@ public:
 
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor != nullptr) {
-      sensor->set_vflip(sensor, CAMERA_VFLIP ? 1 : 0);
-      sensor->set_hmirror(sensor, CAMERA_HMIRROR ? 1 : 0);
-      sensor->set_framesize(sensor, FRAMESIZE_QVGA);
+      configureCameraSensor(sensor);
+      configureCameraAutofocus(sensor);
     }
-    ESP_LOGI(kTag, "camera ready: %dx%d grayscale", 320, 240);
+    ESP_LOGI(kTag,
+             "camera ready: %ux%u JPEG preview, capture=%ux%u%s",
+             static_cast<unsigned>(kCameraFrameWidth),
+             static_cast<unsigned>(kCameraFrameHeight),
+             static_cast<unsigned>(kCameraCaptureFrameWidth),
+             static_cast<unsigned>(kCameraCaptureFrameHeight),
+             CAMERA_ROTATE_CW_90 ? " rotated cw90" : "");
     return true;
   }
 
@@ -577,17 +890,18 @@ private:
   }
 
   bool sampleCameraPresence() {
-    camera_fb_t *frame = esp_camera_fb_get();
-    if (frame == nullptr) {
+    CapturedCameraFrame capture = {};
+    if (!captureCameraFrame(&capture)) {
       diagnostics_.fallbackReason = "camera_frame_failed";
       return present_;
     }
+    const camera_fb_t *frame = &capture.logicalFrame;
 
     int8_t features[kFeatureCount] = {};
     buildModelFeatures(frame, features, kFeatureCount);
 
     const uint16_t roiScore = calculateRoiScore(frame);
-    esp_camera_fb_return(frame);
+    releaseCameraFrame(&capture);
     diagnostics_.score = roiScore;
 
     const SeatModelResult modelResult = seatModel.infer(features, kFeatureCount);
@@ -634,11 +948,8 @@ private:
     uint32_t count = 0;
     for (size_t y = y0; y < y1; y += 3) {
       for (size_t x = x0; x < x1; x += 3) {
-        const size_t index = y * width + x;
-        if (index < frame->len) {
-          sum += frame->buf[index];
-          count++;
-        }
+        sum += frameLumaAt(frame, x, y);
+        count++;
       }
     }
     return count == 0 ? 0 : static_cast<uint16_t>(sum / count);
@@ -668,11 +979,8 @@ private:
         uint32_t count = 0;
         for (size_t y = sy0; y < sy1; y += 2) {
           for (size_t x = sx0; x < sx1; x += 2) {
-            const size_t index = y * width + x;
-            if (index < frame->len) {
-              sum += frame->buf[index];
-              count++;
-            }
+            sum += frameLumaAt(frame, x, y);
+            count++;
           }
         }
         const uint8_t mean = count == 0 ? 0 : static_cast<uint8_t>(sum / count);
@@ -886,13 +1194,14 @@ void handleButton() {
 }
 
 bool captureAndStoreSample(const char *source, uint32_t nowMs, char *outId, size_t outIdSize) {
-  camera_fb_t *frame = nullptr;
+  CapturedCameraFrame capture = {};
   uint8_t *jpgBuffer = nullptr;
   size_t jpgLength = 0;
   bool converted = false;
-  if (!captureFrameAsJpeg(&frame, &jpgBuffer, &jpgLength, &converted)) {
+  if (!captureFrameAsJpeg(&capture, &jpgBuffer, &jpgLength, &converted)) {
     return false;
   }
+  const camera_fb_t *frame = &capture.logicalFrame;
 
   const PresenceDiagnostics diag = presenceDetector.diagnostics();
   const uint32_t sequence = sample_store::nextSequence();
@@ -909,7 +1218,7 @@ bool captureAndStoreSample(const char *source, uint32_t nowMs, char *outId, size
            "{\"sample_id\":\"%s\",\"boot_ms\":%lu,\"source\":\"%s\",\"state\":\"%s\","
            "\"present\":%s,\"raw_present\":%s,\"model_ready\":%s,\"model_prob\":%.3f,"
            "\"inference_ms\":%lu,\"wifi_mode\":\"%s\",\"cloud_enabled\":%s,"
-           "\"frame_width\":%u,\"frame_height\":%u,\"jpeg_bytes\":%u}",
+           "\"camera_rotation\":\"%s\",\"frame_width\":%u,\"frame_height\":%u,\"jpeg_bytes\":%u}",
            sampleId,
            static_cast<unsigned long>(nowMs),
            source == nullptr ? "button2" : source,
@@ -921,12 +1230,13 @@ bool captureAndStoreSample(const char *source, uint32_t nowMs, char *outId, size
            static_cast<unsigned long>(diag.inferenceMs),
            wifiStartedAsSta ? "sta" : "ap",
            ENABLE_CLOUD_REMOTE ? "true" : "false",
+           CAMERA_ROTATE_CW_90 ? "cw90" : "none",
            static_cast<unsigned>(frame->width),
            static_cast<unsigned>(frame->height),
            static_cast<unsigned>(jpgLength));
 
   const esp_err_t err = sample_store::save(sampleId, jpgBuffer, jpgLength, metadata);
-  releaseCapturedJpeg(frame, jpgBuffer, converted);
+  releaseCapturedJpeg(&capture, jpgBuffer, converted);
   if (err != ESP_OK) {
     ESP_LOGE(kTag, "save sample failed: %s", esp_err_to_name(err));
     return false;
@@ -1075,25 +1385,26 @@ void logStatus(bool isPresent, uint32_t nowMs) {
   static constexpr char html[] =
       "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
       "<title>Bell Robot Camera</title><style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}"
-      "main{max-width:760px;margin:20px auto;padding:0 14px}img{width:100%;height:auto;background:#222}"
+      "main{max-width:760px;margin:20px auto;padding:0 14px}.preview{width:min(100%,360px);aspect-ratio:3/4;background:#222;overflow:hidden;display:flex;align-items:center;justify-content:center;margin:auto}"
+      "#frame{width:133.333%;height:75%;display:block;transform:rotate(90deg)}"
       "button,a,input{font-size:18px}button,a{padding:10px 14px;margin:6px 6px 6px 0;display:inline-block}"
       "a{color:#8cc8ff}.settings{margin:16px 0;padding:12px;border:1px solid #333;background:#181818}"
       "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
       "#msg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
-      "<h2>Bell Robot Camera</h2><img id='frame' src='/capture?ts=0'>"
+      "<h2>Bell Robot Camera</h2><div class='preview'><img id='frame' src='/stream'></div>"
       "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a></p>"
       "<form class='settings' onsubmit='saveSettings(event)'>"
       "<label for='sit'>倒计时（分钟）</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
       "<label for='away'>离场容忍（分钟）</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
       "<button type='submit'>保存设置</button><span id='msg'></span></form>"
       "<p><a href='/label?class=absent'>Save absent sample</a><a href='/label?class=seated'>Save seated sample</a></p>"
-      "<script>function refreshFrame(){document.getElementById('frame').src='/capture?ts='+Date.now()}"
+      "<script>function refreshFrame(){document.getElementById('frame').src='/stream?ts='+Date.now()}"
       "async function loadSettings(){let r=await fetch('/settings');let s=await r.json();document.getElementById('sit').value=s.sit_minutes;document.getElementById('away').value=s.away_minutes}"
       "async function saveSettings(e){e.preventDefault();let sit=document.getElementById('sit'),away=document.getElementById('away'),msg=document.getElementById('msg');msg.textContent='Saving...';"
       "let b='sit_minutes='+encodeURIComponent(sit.value)+'&away_minutes='+encodeURIComponent(away.value);"
       "let r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});"
       "msg.textContent=r.ok?'Saved':'Save failed'}"
-      "setInterval(refreshFrame,1000);loadSettings()</script></main></body></html>";
+      "loadSettings()</script></main></body></html>";
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
@@ -1102,12 +1413,13 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
   static constexpr char html[] =
       "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
       "<title>Bell Robot Camera</title><style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}"
-      "main{max-width:760px;margin:20px auto;padding:0 14px}img{width:100%;height:auto;background:#222}"
+      "main{max-width:760px;margin:20px auto;padding:0 14px}.preview{width:min(100%,360px);aspect-ratio:3/4;background:#222;overflow:hidden;display:flex;align-items:center;justify-content:center;margin:auto}"
+      "#frame{width:133.333%;height:75%;display:block;transform:rotate(90deg)}"
       "button,a,input{font-size:18px}button,a{padding:10px 14px;margin:6px 6px 6px 0;display:inline-block}"
       "a{color:#8cc8ff}.settings{margin:16px 0;padding:12px;border:1px solid #333;background:#181818}"
       "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
       ".hint{color:#aaa;font-size:14px}#msg,#cloudMsg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
-      "<h2>Bell Robot Camera</h2><img id='frame' src='/capture?ts=0'>"
+      "<h2>Bell Robot Camera</h2><div class='preview'><img id='frame' src='/stream'></div>"
       "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a></p>"
       "<form class='settings' onsubmit='saveSettings(event)'>"
       "<label for='sit'>Timer minutes</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
@@ -1121,7 +1433,7 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
       "<p class='hint'>Device ID: <span id='device'>-</span></p>"
       "<button type='submit'>Save cloud</button><button type='button' onclick='forgetCloud()'>Forget cloud</button><span id='cloudMsg'></span></form>"
       "<p><a href='/label?class=absent'>Save absent sample</a><a href='/label?class=seated'>Save seated sample</a></p>"
-      "<script>function refreshFrame(){document.getElementById('frame').src='/capture?ts='+Date.now()}"
+      "<script>function refreshFrame(){document.getElementById('frame').src='/stream?ts='+Date.now()}"
       "async function loadSettings(){let r=await fetch('/settings');let s=await r.json();document.getElementById('sit').value=s.sit_minutes;document.getElementById('away').value=s.away_minutes}"
       "async function loadCloud(){let r=await fetch('/cloud');let s=await r.json();document.getElementById('ssid').value=s.ssid||'';document.getElementById('server').value=s.server_url||'';document.getElementById('device').textContent=s.device_id||'-'}"
       "async function saveSettings(e){e.preventDefault();let sit=document.getElementById('sit'),away=document.getElementById('away'),msg=document.getElementById('msg');msg.textContent='Saving...';"
@@ -1130,7 +1442,7 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
       "msg.textContent=r.ok?'Saved':'Save failed'}"
       "async function saveCloud(e){e.preventDefault();let ids=['ssid','pass','server'],p=new URLSearchParams(),msg=document.getElementById('cloudMsg');ids.forEach(id=>p.append(document.getElementById(id).name,document.getElementById(id).value));msg.textContent='Saving...';let r=await fetch('/cloud',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});let t=await r.text();msg.textContent=r.ok?'Saved, rebooting...':('Save failed: '+t)}"
       "async function forgetCloud(){let msg=document.getElementById('cloudMsg');msg.textContent='Clearing...';let r=await fetch('/cloud/forget',{method:'POST'});let t=await r.text();msg.textContent=r.ok?'Cleared, rebooting...':('Clear failed: '+t)}"
-      "setInterval(refreshFrame,1000);loadSettings();loadCloud()</script></main></body></html>";
+      "loadSettings();loadCloud()</script></main></body></html>";
   httpd_resp_set_type(req, "text/html; charset=utf-8");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
@@ -1165,18 +1477,20 @@ esp_err_t sendSamplesPage(httpd_req_t *req) {
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
 
-bool captureFrameAsJpeg(camera_fb_t **outFrame,
+bool captureFrameAsJpeg(CapturedCameraFrame *capture,
                         uint8_t **outJpgBuffer,
                         size_t *outJpgLength,
-                        bool *outConverted) {
-  if (outFrame == nullptr || outJpgBuffer == nullptr || outJpgLength == nullptr || outConverted == nullptr) {
+                        bool *outConverted,
+                        uint8_t jpegQuality,
+                        framesize_t frameSize) {
+  if (capture == nullptr || outJpgBuffer == nullptr || outJpgLength == nullptr || outConverted == nullptr) {
     return false;
   }
 
-  camera_fb_t *frame = esp_camera_fb_get();
-  if (frame == nullptr) {
+  if (!captureCameraFrame(capture, frameSize)) {
     return false;
   }
+  camera_fb_t *frame = &capture->logicalFrame;
 
   uint8_t *jpgBuffer = nullptr;
   size_t jpgLength = 0;
@@ -1185,35 +1499,32 @@ bool captureFrameAsJpeg(camera_fb_t **outFrame,
     jpgBuffer = frame->buf;
     jpgLength = frame->len;
   } else {
-    converted = frame2jpg(frame, 80, &jpgBuffer, &jpgLength);
+    converted = frame2jpg(frame, jpegQuality, &jpgBuffer, &jpgLength);
     if (!converted) {
-      esp_camera_fb_return(frame);
+      releaseCameraFrame(capture);
       return false;
     }
   }
 
-  *outFrame = frame;
   *outJpgBuffer = jpgBuffer;
   *outJpgLength = jpgLength;
   *outConverted = converted;
   return true;
 }
 
-void releaseCapturedJpeg(camera_fb_t *frame, uint8_t *jpgBuffer, bool converted) {
+void releaseCapturedJpeg(CapturedCameraFrame *capture, uint8_t *jpgBuffer, bool converted) {
   if (converted && jpgBuffer != nullptr) {
     free(jpgBuffer);
   }
-  if (frame != nullptr) {
-    esp_camera_fb_return(frame);
-  }
+  releaseCameraFrame(capture);
 }
 
 esp_err_t sendCapture(httpd_req_t *req) {
-  camera_fb_t *frame = nullptr;
+  CapturedCameraFrame capture = {};
   uint8_t *jpgBuffer = nullptr;
   size_t jpgLength = 0;
   bool converted = false;
-  if (!captureFrameAsJpeg(&frame, &jpgBuffer, &jpgLength, &converted)) {
+  if (!captureFrameAsJpeg(&capture, &jpgBuffer, &jpgLength, &converted)) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera capture failed");
     return ESP_FAIL;
   }
@@ -1221,8 +1532,84 @@ esp_err_t sendCapture(httpd_req_t *req) {
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   const esp_err_t err = httpd_resp_send(req, reinterpret_cast<const char *>(jpgBuffer), jpgLength);
-  releaseCapturedJpeg(frame, jpgBuffer, converted);
+  releaseCapturedJpeg(&capture, jpgBuffer, converted);
   return err;
+}
+
+esp_err_t sendStream(httpd_req_t *req) {
+  static constexpr char boundary[] = "bellrobot";
+  char frameHeader[96] = {};
+
+  ESP_LOGI(kTag, "camera stream connected");
+  httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=bellrobot");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(req, "Connection", "close");
+
+  uint32_t logFrameCount = 0;
+  uint32_t logStartMs = millis32();
+  while (true) {
+    CapturedCameraFrame capture = {};
+    if (!lockCamera(&capture)) {
+      ESP_LOGW(kTag, "camera stream lock timeout");
+      return ESP_FAIL;
+    }
+    if (!setCameraFrameSize(kCameraFrameSize)) {
+      releaseCameraFrame(&capture);
+      return ESP_FAIL;
+    }
+
+    camera_fb_t *frame = esp_camera_fb_get();
+    if (frame == nullptr) {
+      ESP_LOGW(kTag, "camera stream capture failed");
+      releaseCameraFrame(&capture);
+      return ESP_FAIL;
+    }
+    capture.rawFrame = frame;
+
+    if (frame->format != PIXFORMAT_JPEG) {
+      ESP_LOGW(kTag, "camera stream expected JPEG frame, got format=%d", static_cast<int>(frame->format));
+      releaseCameraFrame(&capture);
+      return ESP_FAIL;
+    }
+    const size_t frameLength = frame->len;
+    const uint16_t frameWidth = frame->width;
+    const uint16_t frameHeight = frame->height;
+
+    const int headerLength = snprintf(frameHeader,
+                                      sizeof(frameHeader),
+                                      "\r\n--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
+                                      boundary,
+                                      static_cast<unsigned>(frameLength));
+    esp_err_t err = headerLength > 0 && static_cast<size_t>(headerLength) < sizeof(frameHeader)
+                        ? httpd_resp_send_chunk(req, frameHeader, headerLength)
+                        : ESP_FAIL;
+    if (err == ESP_OK) {
+      err = httpd_resp_send_chunk(req, reinterpret_cast<const char *>(frame->buf), frameLength);
+    }
+
+    releaseCameraFrame(&capture);
+    if (err != ESP_OK) {
+      ESP_LOGI(kTag, "camera stream disconnected: %s", esp_err_to_name(err));
+      return ESP_OK;
+    }
+
+    logFrameCount++;
+    if (logFrameCount >= kCameraStreamLogFrames) {
+      const uint32_t nowMs = millis32();
+      const uint32_t elapsedMs = nowMs - logStartMs;
+      const float fps = elapsedMs == 0 ? 0.0f : (static_cast<float>(logFrameCount) * 1000.0f) / elapsedMs;
+      ESP_LOGI(kTag,
+               "camera stream fps=%.1f jpeg=%u bytes frame=%ux%u",
+               static_cast<double>(fps),
+               static_cast<unsigned>(frameLength),
+               static_cast<unsigned>(frameWidth),
+               static_cast<unsigned>(frameHeight));
+      logFrameCount = 0;
+      logStartMs = nowMs;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(kCameraStreamFrameDelayMs));
+  }
 }
 
 esp_err_t sendSettings(httpd_req_t *req) {
@@ -1246,7 +1633,8 @@ void buildStatusPayload(char *payload, size_t payloadSize) {
            "\"model_ready\":%s,\"model_prob\":%.3f,\"model_threshold\":%.2f,"
            "\"model_version\":\"%s\",\"inference_ms\":%lu,"
            "\"fallback_reason\":\"%s\",\"sit_minutes\":%lu,\"away_minutes\":%lu,"
-           "\"cloud_enabled\":%s,\"device_id\":\"%s\",\"wifi_mode\":\"%s\",\"wifi_connected\":%s,"
+           "\"camera_rotation\":\"%s\",\"cloud_enabled\":%s,"
+           "\"device_id\":\"%s\",\"wifi_mode\":\"%s\",\"wifi_connected\":%s,"
            "\"cloud_configured\":%s,\"cloud_last_poll_ms\":%lu,"
            "\"cloud_last_success_ms\":%lu,\"cloud_last_error\":\"%s\"}",
            stateLabel(timerContext.state),
@@ -1268,6 +1656,7 @@ void buildStatusPayload(char *payload, size_t payloadSize) {
            diag.fallbackReason == nullptr ? "" : diag.fallbackReason,
            static_cast<unsigned long>(minutesFromMs(timerSettings.sitTargetMs)),
            static_cast<unsigned long>(minutesFromMs(timerSettings.awayResetMs)),
+           CAMERA_ROTATE_CW_90 ? "cw90" : "none",
            ENABLE_CLOUD_REMOTE ? "true" : "false",
            cloudSettings.deviceId,
            wifiStartedAsSta ? "sta" : "ap",
@@ -1537,11 +1926,12 @@ esp_err_t handleLabel(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  camera_fb_t *frame = esp_camera_fb_get();
-  if (frame == nullptr) {
+  CapturedCameraFrame capture = {};
+  if (!captureCameraFrame(&capture)) {
     httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "camera capture failed");
     return ESP_FAIL;
   }
+  const camera_fb_t *frame = &capture.logicalFrame;
 
   int8_t features[kFeatureCount] = {};
   presenceDetector.exportNormalizedFeatures(frame, features, kFeatureCount);
@@ -1563,7 +1953,7 @@ esp_err_t handleLabel(httpd_req_t *req) {
   httpd_resp_send_chunk(req, header, headerLength);
   httpd_resp_send_chunk(req, reinterpret_cast<const char *>(pixels), sizeof(pixels));
   httpd_resp_send_chunk(req, nullptr, 0);
-  esp_camera_fb_return(frame);
+  releaseCameraFrame(&capture);
   return ESP_OK;
 }
 
@@ -1582,6 +1972,11 @@ void startWebServer() {
   capture.uri = "/capture";
   capture.method = HTTP_GET;
   capture.handler = sendCapture;
+
+  httpd_uri_t stream = {};
+  stream.uri = "/stream";
+  stream.method = HTTP_GET;
+  stream.handler = sendStream;
 
   httpd_uri_t status = {};
   status.uri = "/status";
@@ -1655,6 +2050,7 @@ void startWebServer() {
 
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &index));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &capture));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &stream));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &status));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &reset));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &settingsGet));
@@ -2144,11 +2540,11 @@ void postCommandResult(const char *commandId, bool ok, const char *message) {
 }
 
 bool captureJpegForCloud(const char *commandId) {
-  camera_fb_t *frame = nullptr;
+  CapturedCameraFrame capture = {};
   uint8_t *jpgBuffer = nullptr;
   size_t jpgLength = 0;
   bool converted = false;
-  if (!captureFrameAsJpeg(&frame, &jpgBuffer, &jpgLength, &converted)) {
+  if (!captureFrameAsJpeg(&capture, &jpgBuffer, &jpgLength, &converted)) {
     return false;
   }
 
@@ -2160,7 +2556,7 @@ bool captureJpegForCloud(const char *commandId) {
            commandId == nullptr ? "" : commandId);
   char response[256] = {};
   const esp_err_t err = cloudPost(path, "image/jpeg", jpgBuffer, jpgLength, response, sizeof(response));
-  releaseCapturedJpeg(frame, jpgBuffer, converted);
+  releaseCapturedJpeg(&capture, jpgBuffer, converted);
   return err == ESP_OK;
 }
 
