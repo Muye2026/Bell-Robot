@@ -4,19 +4,21 @@
 
 ## OLED
 
-当前屏幕是 SPI 版 SSD1306，丝印为 `GND / VCC / SCL / SDA / RES / DCC / CS`。这里的 `SCL/SDA` 不是 I2C，而是 SPI 时钟和 SPI 数据：
+当前屏幕是 SPI 版 SSD1306，丝印为 `GND / VCC / SCL / SDA / RES / DC / CS`。这里的 `SCL/SDA` 不是 I2C，而是 SPI 时钟和 SPI 数据：
 
 | OLED | ESP32-S3 GPIO | 说明 |
 | --- | ---: | --- |
 | VCC | 3V3 | 优先使用 3.3V |
 | GND | GND | 地 |
-| SCL | GPIO 14 | SPI 时钟，可在 `PIN_OLED_CLK` 修改 |
-| SDA | GPIO 3 | SPI 数据，可在 `PIN_OLED_MOSI` 修改 |
+| SCL | GPIO 48 | SPI 时钟，可在 `PIN_OLED_CLK` 修改 |
+| SDA | GPIO 47 | SPI 数据，可在 `PIN_OLED_MOSI` 修改 |
 | RES | GPIO 40 | 可在 `PIN_OLED_RESET` 修改 |
-| DCC | GPIO 41 | 数据/命令选择，可在 `PIN_OLED_DC` 修改 |
+| DC | GPIO 41 | 数据/命令选择，可在 `PIN_OLED_DC` 修改 |
 | CS | GPIO 42 | 可在 `PIN_OLED_CS` 修改 |
 
-不要按 I2C 屏理解这组 `SCL/SDA`；该屏幕因为有 `RES/DCC/CS`，所以当前按 SPI 驱动，没有 I2C 地址。
+2026-06-05 调整：OLED 的 `SCL/SDA` 从 GPIO14/GPIO3 迁移到 GPIO48/GPIO47，尽量使用开发板当前上排引脚；`RES/DC/CS` 继续使用 GPIO40/GPIO41/GPIO42。
+
+不要按 I2C 屏理解这组 `SCL/SDA`；该屏幕因为有 `RES/DC/CS`，所以当前按 SPI 驱动，没有 I2C 地址。
 
 ## 无源蜂鸣器
 

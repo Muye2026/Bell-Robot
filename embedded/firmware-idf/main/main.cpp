@@ -2768,7 +2768,9 @@ extern "C" void app_main(void) {
   setupButton();
   ESP_ERROR_CHECK(sample_store::init());
   display.begin();
-  runOledDiagnostics();
+  if (ENABLE_OLED_DIAGNOSTICS) {
+    runOledDiagnostics();
+  }
   display.text(0, 0, "BELL");
   display.text(0, 1, "START");
   display.flush();
