@@ -84,7 +84,7 @@ void spiWriteByte(uint8_t value) {
 }
 } // namespace
 
-bool Ssd1306Spi::begin() {
+bool Ssd1306Spi::begin(uint8_t comScanDirection, uint8_t comPinsConfig) {
   gpio_config_t io = {};
   io.pin_bit_mask = (1ULL << PIN_OLED_MOSI) | (1ULL << PIN_OLED_CLK) |
                     (1ULL << PIN_OLED_DC) | (1ULL << PIN_OLED_CS) |
@@ -95,7 +95,7 @@ bool Ssd1306Spi::begin() {
   reset();
   const uint8_t init[] = {
       0xae, 0xd5, 0x80, 0xa8, 0x3f, 0xd3, 0x00, 0x40, 0x8d, 0x14,
-      0x20, 0x00, 0xa1, 0xc8, 0xda, 0x12, 0x81, 0xcf, 0xd9, 0xf1,
+      0x20, 0x00, 0xa1, comScanDirection, 0xda, comPinsConfig, 0x81, 0xcf, 0xd9, 0xf1,
       0xdb, 0x40, 0xa4, 0xa6, 0xaf,
   };
   for (uint8_t value : init) {
@@ -108,6 +108,10 @@ bool Ssd1306Spi::begin() {
 
 void Ssd1306Spi::clear() {
   memset(buffer_, 0, sizeof(buffer_));
+}
+
+void Ssd1306Spi::fill(bool on) {
+  memset(buffer_, on ? 0xff : 0x00, sizeof(buffer_));
 }
 
 void Ssd1306Spi::text(int col, int row, const char *value) {
@@ -151,25 +155,11 @@ void Ssd1306Spi::textScaledf(int x, int y, int scale, const char *format, ...) {
 }
 
 void Ssd1306Spi::flush() {
-  uint8_t physicalBuffer[OLED_PHYSICAL_WIDTH * OLED_PHYSICAL_HEIGHT / 8] = {};
-  for (int y = 0; y < OLED_HEIGHT; ++y) {
-    for (int x = 0; x < OLED_WIDTH; ++x) {
-      if (!getPixel(x, y)) {
-        continue;
-      }
-      if (OLED_ROTATE_CCW_90) {
-        setPhysicalPixel(physicalBuffer, y, OLED_WIDTH - 1 - x);
-      } else {
-        setPhysicalPixel(physicalBuffer, x, y);
-      }
-    }
-  }
-
-  for (uint8_t page = 0; page < OLED_PHYSICAL_HEIGHT / 8; ++page) {
+  for (uint8_t page = 0; page < OLED_HEIGHT / 8; ++page) {
     command(0xb0 + page);
     command(0x00);
     command(0x10);
-    data(&physicalBuffer[page * OLED_PHYSICAL_WIDTH], OLED_PHYSICAL_WIDTH);
+    data(&buffer_[page * OLED_WIDTH], OLED_WIDTH);
   }
 }
 
@@ -241,16 +231,15 @@ bool Ssd1306Spi::getPixel(int x, int y) const {
   return (buffer_[(y / 8) * OLED_WIDTH + x] & (1 << (y % 8))) != 0;
 }
 
-void Ssd1306Spi::setPixel(int x, int y) {
+void Ssd1306Spi::setPixel(int x, int y, bool on) {
   if (x < 0 || x >= OLED_WIDTH || y < 0 || y >= OLED_HEIGHT) {
     return;
   }
-  buffer_[(y / 8) * OLED_WIDTH + x] |= (1 << (y % 8));
-}
-
-void Ssd1306Spi::setPhysicalPixel(uint8_t *physicalBuffer, int x, int y) const {
-  if (physicalBuffer == nullptr || x < 0 || x >= OLED_PHYSICAL_WIDTH || y < 0 || y >= OLED_PHYSICAL_HEIGHT) {
-    return;
+  const uint16_t index = (y / 8) * OLED_WIDTH + x;
+  const uint8_t mask = static_cast<uint8_t>(1 << (y % 8));
+  if (on) {
+    buffer_[index] |= mask;
+  } else {
+    buffer_[index] &= static_cast<uint8_t>(~mask);
   }
-  physicalBuffer[(y / 8) * OLED_PHYSICAL_WIDTH + x] |= (1 << (y % 8));
 }

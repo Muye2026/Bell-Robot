@@ -509,6 +509,102 @@ int centeredTextX(const char *text, int scale) {
   return std::max(0, (OLED_WIDTH - scaledTextWidth(text, scale)) / 2);
 }
 
+struct OledDiagnosticProfile {
+  const char *label;
+  uint8_t comScanDirection;
+  uint8_t comPinsConfig;
+};
+
+void flushDisplayForMs(uint32_t durationMs) {
+  display.flush();
+  vTaskDelay(pdMS_TO_TICKS(durationMs));
+}
+
+void clearDisplayBand(int yStart, int yEnd) {
+  for (int y = yStart; y <= yEnd && y < OLED_HEIGHT; ++y) {
+    if (y < 0) {
+      continue;
+    }
+    for (int x = 0; x < OLED_WIDTH; ++x) {
+      display.setPixel(x, y, false);
+    }
+  }
+}
+
+void drawProfileLabel(const char *label) {
+  clearDisplayBand(48, OLED_HEIGHT - 1);
+  display.textScaled(centeredTextX(label, 1), 56, 1, label);
+}
+
+void drawCheckerPattern() {
+  display.clear();
+  for (int y = 0; y < OLED_HEIGHT; ++y) {
+    for (int x = 0; x < OLED_WIDTH; ++x) {
+      if (((x / 4) + (y / 4)) % 2 == 0) {
+        display.setPixel(x, y);
+      }
+    }
+  }
+}
+
+void drawVerticalStripePattern() {
+  display.clear();
+  for (int x = 0; x < OLED_WIDTH; ++x) {
+    if ((x / 2) % 2 != 0) {
+      continue;
+    }
+    for (int y = 0; y < OLED_HEIGHT; ++y) {
+      display.setPixel(x, y);
+    }
+  }
+}
+
+void runOledDiagnosticsForProfile(const OledDiagnosticProfile &profile) {
+  display.begin(profile.comScanDirection, profile.comPinsConfig);
+
+  display.clear();
+  drawProfileLabel(profile.label);
+  flushDisplayForMs(700);
+
+  display.fill(true);
+  drawProfileLabel(profile.label);
+  flushDisplayForMs(1200);
+
+  drawVerticalStripePattern();
+  drawProfileLabel(profile.label);
+  flushDisplayForMs(1200);
+
+  drawCheckerPattern();
+  drawProfileLabel(profile.label);
+  flushDisplayForMs(1200);
+
+  display.clear();
+  flushDisplayForMs(300);
+}
+
+void runOledDiagnostics() {
+  if (!ENABLE_OLED_DIAGNOSTICS) {
+    return;
+  }
+
+  const OledDiagnosticProfile profiles[] = {
+      {"P1 A1 C8 DA12", 0xc8, 0x12},
+      {"P2 A1 C0 DA12", 0xc0, 0x12},
+      {"P3 A1 C8 DA02", 0xc8, 0x02},
+      {"P4 A1 C0 DA02", 0xc0, 0x02},
+      {"P5 A1 C8 DA32", 0xc8, 0x32},
+      {"P6 A1 C0 DA32", 0xc0, 0x32},
+  };
+
+  for (const OledDiagnosticProfile &profile : profiles) {
+    runOledDiagnosticsForProfile(profile);
+  }
+
+  display.begin();
+  display.clear();
+  display.flush();
+}
+
 void normalizeNvsInit() {
   esp_err_t err = nvs_flash_init();
   if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1309,7 +1405,7 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
 
   if (displayOverlay.untilMs != 0 && static_cast<int32_t>(displayOverlay.untilMs - nowMs) > 0) {
     display.clear();
-    display.textScaled(centeredTextX(displayOverlay.message, 2), 56, 2, displayOverlay.message);
+    display.textScaled(centeredTextX(displayOverlay.message, 2), 24, 2, displayOverlay.message);
     display.flush();
     return;
   }
@@ -1323,10 +1419,12 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
   const uint32_t totalSeconds = (remainingMs + 999) / 1000;
   const uint32_t displayMinutes = std::min<uint32_t>(totalSeconds / 60, 99);
   const uint32_t displaySeconds = totalSeconds % 60;
-  char minutesText[4] = {};
-  char secondsText[4] = {};
-  snprintf(minutesText, sizeof(minutesText), "%02lu", static_cast<unsigned long>(displayMinutes));
-  snprintf(secondsText, sizeof(secondsText), "%02lu", static_cast<unsigned long>(displaySeconds));
+  char timerText[8] = {};
+  snprintf(timerText,
+           sizeof(timerText),
+           "%02lu:%02lu",
+           static_cast<unsigned long>(displayMinutes),
+           static_cast<unsigned long>(displaySeconds));
   const bool awayState = timerContext.state == TimerState::AwayGrace ||
                          timerContext.state == TimerState::AwayWarning;
 
@@ -1350,10 +1448,9 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
            static_cast<unsigned long>(probabilityPercent));
 
   display.clear();
-  display.textScaled(centeredTextX(displayState, 1), 6, 1, displayState);
-  display.textScaled(centeredTextX(minutesText, kTimerDigitScale), 28, kTimerDigitScale, minutesText);
-  display.textScaled(centeredTextX(secondsText, kTimerDigitScale), 70, kTimerDigitScale, secondsText);
-  display.textScaled(centeredTextX(probabilityText, 1), 116, 1, probabilityText);
+  display.textScaled(centeredTextX(displayState, 1), 0, 1, displayState);
+  display.textScaled(centeredTextX(timerText, kTimerDigitScale), 20, kTimerDigitScale, timerText);
+  display.textScaled(centeredTextX(probabilityText, 1), 56, 1, probabilityText);
   display.flush();
 }
 
@@ -2671,6 +2768,7 @@ extern "C" void app_main(void) {
   setupButton();
   ESP_ERROR_CHECK(sample_store::init());
   display.begin();
+  runOledDiagnostics();
   display.text(0, 0, "BELL");
   display.text(0, 1, "START");
   display.flush();

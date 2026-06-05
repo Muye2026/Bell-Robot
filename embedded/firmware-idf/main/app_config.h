@@ -9,13 +9,12 @@ static constexpr uint32_t AWAY_GRACE_MS = 10UL * 1000UL;
 static constexpr uint32_t DEFAULT_AWAY_RESET_MS = 1UL * 60UL * 1000UL;
 
 // Display: SPI SSD1306 128x64 module with pins SCK/MOSI/RES/DC/CS.
-// The physical panel is mounted in portrait; render a 64x128 logical canvas
-// and rotate it 90 degrees counter-clockwise into the SSD1306 page buffer.
+// Render a 128x64 logical canvas directly into the SSD1306 page buffer.
 static constexpr int OLED_PHYSICAL_WIDTH = 128;
 static constexpr int OLED_PHYSICAL_HEIGHT = 64;
-static constexpr int OLED_WIDTH = 64;
-static constexpr int OLED_HEIGHT = 128;
-static constexpr bool OLED_ROTATE_CCW_90 = true;
+static constexpr int OLED_WIDTH = OLED_PHYSICAL_WIDTH;
+static constexpr int OLED_HEIGHT = OLED_PHYSICAL_HEIGHT;
+static constexpr bool ENABLE_OLED_DIAGNOSTICS = true;
 static constexpr int PIN_OLED_MOSI = 3;
 static constexpr int PIN_OLED_CLK = 14;
 static constexpr int PIN_OLED_DC = 41;
