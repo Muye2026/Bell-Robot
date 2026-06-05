@@ -5,10 +5,10 @@
 
 ## 文件
 
-- [方案 A 图板](D:\Project\Bell-Robot\industrial-design\concept-r1\01-concept-a-board.png)
-- [方案 B 图板](D:\Project\Bell-Robot\industrial-design\concept-r1\02-concept-b-board.png)
-- [方案 C 图板](D:\Project\Bell-Robot\industrial-design\concept-r1\03-concept-c-board.png)
-- [三方案对比图板](D:\Project\Bell-Robot\industrial-design\concept-r1\04-comparison-board.png)
+- [方案 A 图板](./01-concept-a-board.png)
+- [方案 B 图板](./02-concept-b-board.png)
+- [方案 C 图板](./03-concept-c-board.png)
+- [三方案对比图板](./04-comparison-board.png)
 
 ## 本轮统一约束
 

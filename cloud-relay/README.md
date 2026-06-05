@@ -49,7 +49,7 @@ http://192.168.4.1/
 
 - 2.4G Wi-Fi SSID
 - Wi-Fi password
-- Server URL，例如 `http://43.134.30.245:8080`
+- Server URL，例如 `http://your-server:8080`
 
 `device_id` 由固件根据芯片 MAC 自动生成，例如 `bell-robot-f63910`。设备 token 由固件随机生成并保存在 NVS，用户不需要填写。
 
@@ -81,6 +81,6 @@ cloud-relay/data/devices.json
 
 ## 已验证
 
-- 2026-05-01：服务器 `43.134.30.245:8080` 已部署新版，多设备下拉框正常。
+- 2026-05-01：服务器已部署新版，多设备下拉框正常。
 - 2026-05-01：设备 `bell-robot-f63910` 已在线，状态上报正常。
 - 2026-05-10：设备重新切回 STA 云远程后持续在线，远程快照返回 JPEG。

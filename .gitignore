@@ -1,8 +1,4 @@
-# Model training generated data
-model/dataset/**/*.pgm
-model/dataset/**/*.jpg
-model/dataset/**/*.jpeg
-model/dataset/**/*.json
+# Model training data — tracked in Git (31MB, essential for retraining)
 model/open_seed/
 model/*overview*.jpg
 model/candidate_preview/raw/
@@ -30,6 +26,9 @@ Thumbs.db
 # Industrial design generated artifacts
 _cad-output/
 _render-raster/
+
+# Build output (global catch-all)
+build/
 
 # Cloud relay local files
 cloud-relay/node_modules/

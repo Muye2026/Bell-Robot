@@ -5,10 +5,10 @@
 
 ## 文件
 
-- [结构说明图](D:\Project\Bell-Robot\industrial-design\tech1-structure-r1\tech1-side-structure.svg)
-- [平面堆叠说明图](D:\Project\Bell-Robot\industrial-design\tech1-structure-r1\tech1-top-layout.svg)
-- [1:1 顶视布局打印图](D:\Project\Bell-Robot\industrial-design\tech1-structure-r1\tech1-top-outline-1to1.svg)
-- [布局参数 JSON](D:\Project\Bell-Robot\industrial-design\tech1-structure-r1\tech1-layout.json)
+- [结构说明图](./tech1-side-structure.svg)
+- [平面堆叠说明图](./tech1-top-layout.svg)
+- [1:1 顶视布局打印图](./tech1-top-outline-1to1.svg)
+- [布局参数 JSON](./tech1-layout.json)
 
 ## 结构基线
 

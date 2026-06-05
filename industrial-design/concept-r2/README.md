@@ -10,11 +10,11 @@
 
 ## 文件
 
-- [Tech-1 超薄科技条形体](D:\Project\Bell-Robot\industrial-design\concept-r2\01-tech-1-board.png)
-- [Tech-2 轻薄悬浮科技体](D:\Project\Bell-Robot\industrial-design\concept-r2\02-tech-2-board.png)
-- [Pet-1 友好陪伴型](D:\Project\Bell-Robot\industrial-design\concept-r2\03-pet-1-board.png)
-- [Pet-2 克制电子伙伴型](D:\Project\Bell-Robot\industrial-design\concept-r2\04-pet-2-board.png)
-- [四方案总对比板](D:\Project\Bell-Robot\industrial-design\concept-r2\05-comparison-board.png)
+- [Tech-1 超薄科技条形体](./01-tech-1-board.png)
+- [Tech-2 轻薄悬浮科技体](./02-tech-2-board.png)
+- [Pet-1 友好陪伴型](./03-pet-1-board.png)
+- [Pet-2 克制电子伙伴型](./04-pet-2-board.png)
+- [四方案总对比板](./05-comparison-board.png)
 
 ## 本轮共通约束
 
