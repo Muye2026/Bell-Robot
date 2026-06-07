@@ -1,5 +1,7 @@
 # Bell Robot Tech1 A 风格结构草模 STEP R1
 
+> 旧链路说明：本目录是 Windows FreeCAD/VTK 版本，保留作历史参考。当前 Mac 可运行主链路已迁移到 `industrial-design/tech1-ocp-r1/`，使用 OCP/OpenCascade 生成 STEP/STL/OBJ，并用软件渲染生成多视图和对比图。
+
 本目录用于生成 Tech1 A 风格的可编辑结构草模。模型以 `concept-r3/01-tech1-angular-a.png` 的棱角化外观为主，同时按 `tech1-structure-r1` 的结构约束建模。
 
 ## 当前保留的主线脚本
@@ -35,6 +37,20 @@
 这版是结构草模，不是量产装配图。它没有包含最终壁厚、公差、螺丝柱、卡扣、拔模角、防水防尘或真实线束固定方案。后续进入详细结构设计时，建议先实测开发板 USB 外壳、插头占用、摄像头模组厚度和蜂鸣器高度，再收紧 Z 向空间。
 
 ## 生成与验证
+
+当前 Mac 主链路：
+
+```bash
+/Users/muye11/Desktop/Project/DXL/backend/.venv/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant all
+```
+
+完整说明见：
+
+```bash
+industrial-design/tech1-ocp-r1/README.md
+```
+
+旧 Windows FreeCAD 链路如下，仅作历史参考。
 
 本次使用 FreeCAD `1.1.1`，安装位置：
 
