@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "app_config.h"
+#include "buzzer_music.h"
 #include "esp_camera.h"
 #include "esp_camera_af.h"
 #include "esp_check.h"
@@ -129,6 +130,15 @@ struct BuzzerSequence {
   uint32_t offMs = 0;
 };
 
+// 非阻塞旋律播放器：在主循环里逐个音符推进，到时提示音用它播放乐谱。
+struct MelodyPlayer {
+  const BuzzerNote *notes = nullptr;
+  size_t count = 0;
+  size_t index = 0;
+  uint32_t segmentEndMs = 0;
+  bool active = false;
+};
+
 struct DisplayOverlay {
   char message[16] = {};
   uint32_t untilMs = 0;
@@ -172,6 +182,8 @@ bool wifiStartedAsAp = false;
 uint32_t sampleCounter = 0;
 char cloudLastError[64] = "not_started";
 BuzzerSequence buzzerSequence;
+MelodyPlayer alertMelody;
+uint32_t alertMelodyGapUntilMs = 0;
 DisplayOverlay displayOverlay;
 
 esp_err_t sendSamplesList(httpd_req_t *req);
@@ -1144,6 +1156,63 @@ void startBuzzerSequence(uint32_t nowMs, uint8_t beeps, uint32_t onMs, uint32_t 
   buzzerOn();
 }
 
+// 让蜂鸣器发出指定频率的方波；freqHz 为 0 表示休止（静音）。
+// 与 buzzerOn() 不同，这里每次都会重设频率，用于逐音符播放旋律。
+void buzzerTone(uint32_t freqHz) {
+  if (freqHz == 0) {
+    buzzerOff();
+    return;
+  }
+  ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_1, freqHz);
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, BUZZER_DUTY);
+  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+  buzzerActive = true;
+}
+
+const BuzzerMelody &activeAlertMelody() {
+  int id = BUZZER_ALERT_MELODY;
+  if (id < 0 || static_cast<size_t>(id) >= kBuzzerMelodyCount) {
+    id = 0;
+  }
+  return kBuzzerMelodies[id];
+}
+
+void startMelody(uint32_t nowMs, const BuzzerMelody &melody) {
+  if (melody.notes == nullptr || melody.count == 0) {
+    return;
+  }
+  alertMelody.notes = melody.notes;
+  alertMelody.count = melody.count;
+  alertMelody.index = 0;
+  alertMelody.active = true;
+  buzzerTone(melody.notes[0].freqHz);
+  alertMelody.segmentEndMs = nowMs + melody.notes[0].durationMs;
+}
+
+void stopMelody() {
+  alertMelody.active = false;
+  buzzerOff();
+}
+
+// 推进旋律到下一个音符；整首播完后把 active 置回 false。
+void updateMelody(uint32_t nowMs) {
+  if (!alertMelody.active) {
+    return;
+  }
+  if (static_cast<int32_t>(nowMs - alertMelody.segmentEndMs) < 0) {
+    return;
+  }
+  alertMelody.index++;
+  if (alertMelody.index >= alertMelody.count) {
+    alertMelody.active = false;
+    buzzerOff();
+    return;
+  }
+  const BuzzerNote &note = alertMelody.notes[alertMelody.index];
+  buzzerTone(note.freqHz);
+  alertMelody.segmentEndMs = nowMs + note.durationMs;
+}
+
 void showDisplayOverlay(const char *message, uint32_t nowMs, uint32_t durationMs) {
   safeCopy(displayOverlay.message, sizeof(displayOverlay.message), message);
   displayOverlay.untilMs = nowMs + durationMs;
@@ -1152,6 +1221,8 @@ void showDisplayOverlay(const char *message, uint32_t nowMs, uint32_t durationMs
 
 void resetTimer() {
   timerContext = TimerContext{};
+  stopMelody();
+  alertMelodyGapUntilMs = 0;
   buzzerOff();
 }
 
@@ -1386,14 +1457,23 @@ void updateBuzzer(uint32_t nowMs) {
   }
 
   if (timerContext.state == TimerState::Alerting) {
-    if ((nowMs / 500) % 2 == 0) {
-      buzzerOn();
-    } else {
-      buzzerOff();
+    // 到时：循环播放选定的提示音旋律，每播完一遍静音 BUZZER_ALERT_REPEAT_GAP_MS
+    // 再重播，直到用户起身（!isPresent 触发 resetTimer）。
+    if (alertMelody.active) {
+      updateMelody(nowMs);
+      if (!alertMelody.active) {
+        alertMelodyGapUntilMs = nowMs + BUZZER_ALERT_REPEAT_GAP_MS;
+      }
+    } else if (static_cast<int32_t>(nowMs - alertMelodyGapUntilMs) >= 0) {
+      startMelody(nowMs, activeAlertMelody());
     }
     return;
   }
 
+  if (alertMelody.active) {
+    stopMelody();
+  }
+  alertMelodyGapUntilMs = 0;
   buzzerOff();
 }
 

@@ -60,6 +60,14 @@ AP-only 模式不注册 `/cloud` 和 `/cloud/forget`。
 - 元数据包含 `sample_id`、`boot_ms`、`state`、`present`、`model_prob`、`wifi_mode`、`jpeg_bytes` 等运行时字段。
 - 设备端固定保留最新 `64` 组样本，超出后自动淘汰最旧样本。
 
+## 到时提示音旋律
+
+- 倒计时到时（`Alerting` 状态）的提示音从原来固定 2400Hz 方波改为可选旋律，乐谱定义在 `main/buzzer_music.h`。
+- 无源蜂鸣器由 LEDC PWM 驱动，播放器逐音符改变方波频率，整套播放非阻塞，不影响计时与摄像头逻辑。
+- 在 `main/app_config.h` 用 `BUZZER_ALERT_MELODY` 选择：`0` 超级马里奥过关音（默认）、`1` 最终幻想胜利号角、`2` 升级小铃声。
+- 到时后循环播放，每遍之间静音 `BUZZER_ALERT_REPEAT_GAP_MS`（默认 1200ms），起身离场后自动消音复位。
+- 新增旋律：在 `buzzer_music.h` 按 `{频率Hz, 时长ms}` 加一张表并登记到 `kBuzzerMelodies`，再用新编号引用。
+
 ## 分区
 
 当前使用 `partitions.csv`：
@@ -78,3 +86,4 @@ AP-only 模式不注册 `/cloud` 和 `/cloud/forget`。
 - 2026-05-10：STA 云远程模式已验证，设备 `bell-robot-f63910` 可持续在线并返回远程 JPEG。
 - 2026-05-20：新增 `ENABLE_CLOUD_REMOTE=false` 默认 AP-only 模式，便于继续本地开发。
 - 2026-06-03：新增第二按钮采样缓存、`/samples` 页面和 4MB SPIFFS 样本分区。
+- 2026-06-07：到时提示音改为可选旋律（默认马里奥过关音），新增 `buzzer_music.h` 与非阻塞旋律播放器。已在主机端模拟三段乐谱的音符时序（均按序播完并停止，频率 392–2093Hz），并用方波合成试听确认；`idf.py build` 上板编译待用户在本地 ESP-IDF 环境验证。

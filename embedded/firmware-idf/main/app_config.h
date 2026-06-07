@@ -29,6 +29,13 @@ static constexpr uint32_t BUTTON_DEBOUNCE_MS = 40;
 static constexpr uint32_t CAPTURE_BUTTON_DEBOUNCE_MS = 40;
 static constexpr uint32_t BUZZER_FREQUENCY_HZ = 2400;
 static constexpr uint32_t BUZZER_DUTY = 128;
+
+// 倒计时到时（Alerting 状态）的提示音旋律。
+// 0 = 超级马里奥「过关」通关音，1 = 最终幻想「胜利」号角，2 = 升级/答对小铃声。
+// 乐谱定义在 buzzer_music.h，可在那里新增旋律后用新的编号引用。
+static constexpr int BUZZER_ALERT_MELODY = 0;
+// 旋律播完一遍后、在仍未起身时，下一次重播之前的静音间隔。
+static constexpr uint32_t BUZZER_ALERT_REPEAT_GAP_MS = 1200;
 static constexpr size_t SAMPLE_STORE_MAX_COUNT = 64;
 
 // Camera preview AP.
