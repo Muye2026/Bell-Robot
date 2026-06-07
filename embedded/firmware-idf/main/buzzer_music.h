@@ -70,11 +70,43 @@ constexpr BuzzerNote kMelodyLevelUp[] = {
 };
 
 // 上电自检提示音：塞尔达风格的原创冒险小铃声，不照搬原曲旋律。
-constexpr BuzzerNote kMelodyStartupAdventure[] = {
+constexpr BuzzerNote kStartupMelodyShort[] = {
+    {bm::C5, 95},  {bm::REST, 18}, {bm::G5, 95},  {bm::REST, 18},
+    {bm::C6, 120}, {bm::REST, 24}, {bm::E6, 130}, {bm::REST, 32},
+    {bm::G6, 280}, {bm::REST, 45}, {bm::E6, 150}, {bm::REST, 25},
+    {bm::C6, 420},
+};
+
+constexpr BuzzerNote kStartupMelodyMedium[] = {
     {bm::C5, 90},  {bm::REST, 20}, {bm::E5, 90},  {bm::REST, 20},
-    {bm::G5, 110}, {bm::REST, 20}, {bm::C6, 150}, {bm::REST, 35},
-    {bm::G5, 95},  {bm::REST, 20}, {bm::C6, 120}, {bm::REST, 20},
-    {bm::E6, 260}, {bm::REST, 45}, {bm::G6, 360},
+    {bm::G5, 110}, {bm::REST, 22}, {bm::C6, 140}, {bm::REST, 35},
+    {bm::D6, 110}, {bm::REST, 22}, {bm::E6, 110}, {bm::REST, 22},
+    {bm::G6, 260}, {bm::REST, 70},
+    {bm::E6, 120}, {bm::REST, 20}, {bm::G6, 120}, {bm::REST, 20},
+    {bm::A6, 180}, {bm::REST, 35}, {bm::G6, 360}, {bm::REST, 80},
+    {bm::C7, 460},
+};
+
+constexpr BuzzerNote kStartupMelodyLong[] = {
+    {bm::C5, 85},  {bm::REST, 18}, {bm::G5, 85},  {bm::REST, 18},
+    {bm::C6, 120}, {bm::REST, 26}, {bm::E6, 150}, {bm::REST, 70},
+    {bm::D5, 85},  {bm::REST, 18}, {bm::A5, 85},  {bm::REST, 18},
+    {bm::D6, 120}, {bm::REST, 26}, {bm::FS6, 150}, {bm::REST, 90},
+
+    {bm::E5, 80},  {bm::REST, 20}, {bm::G5, 80},  {bm::REST, 20},
+    {bm::B5, 90},  {bm::REST, 20}, {bm::E6, 130}, {bm::REST, 55},
+    {bm::G6, 90},  {bm::REST, 20}, {bm::E6, 90},  {bm::REST, 20},
+    {bm::C6, 130}, {bm::REST, 90},
+
+    {bm::F5, 85},  {bm::REST, 18}, {bm::A5, 85},  {bm::REST, 18},
+    {bm::C6, 100}, {bm::REST, 18}, {bm::F6, 150}, {bm::REST, 65},
+    {bm::A6, 120}, {bm::REST, 24}, {bm::G6, 120}, {bm::REST, 24},
+    {bm::E6, 180}, {bm::REST, 95},
+
+    {bm::C6, 110}, {bm::REST, 20}, {bm::E6, 110}, {bm::REST, 20},
+    {bm::G6, 130}, {bm::REST, 25}, {bm::C7, 360}, {bm::REST, 70},
+    {bm::B6, 120}, {bm::REST, 22}, {bm::G6, 160}, {bm::REST, 30},
+    {bm::C7, 520},
 };
 
 struct BuzzerMelody {
@@ -82,9 +114,17 @@ struct BuzzerMelody {
   size_t count;
 };
 
+constexpr BuzzerMelody kStartupMelodyVariants[] = {
+    {kStartupMelodyShort, sizeof(kStartupMelodyShort) / sizeof(kStartupMelodyShort[0])},
+    {kStartupMelodyMedium, sizeof(kStartupMelodyMedium) / sizeof(kStartupMelodyMedium[0])},
+    {kStartupMelodyLong, sizeof(kStartupMelodyLong) / sizeof(kStartupMelodyLong[0])},
+};
+constexpr size_t kStartupMelodyVariantCount =
+    sizeof(kStartupMelodyVariants) / sizeof(kStartupMelodyVariants[0]);
+
 constexpr BuzzerMelody kStartupMelody = {
-    kMelodyStartupAdventure,
-    sizeof(kMelodyStartupAdventure) / sizeof(kMelodyStartupAdventure[0]),
+    kStartupMelodyMedium,
+    sizeof(kStartupMelodyMedium) / sizeof(kStartupMelodyMedium[0]),
 };
 
 // 与 app_config.h 中 BUZZER_ALERT_MELODY 的编号一一对应。

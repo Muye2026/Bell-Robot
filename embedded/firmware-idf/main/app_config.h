@@ -30,6 +30,12 @@ static constexpr uint32_t CAPTURE_BUTTON_DEBOUNCE_MS = 40;
 static constexpr uint32_t BUZZER_FREQUENCY_HZ = 2400;
 static constexpr uint32_t BUZZER_DUTY = 128;
 
+// Startup feedback.
+static constexpr bool STARTUP_FEEDBACK_ENABLED = true;
+static constexpr bool STARTUP_AUDIO_ENABLED = true;
+static constexpr uint32_t STARTUP_DISPLAY_FRAME_MS = 120;
+static constexpr bool CAMERA_AUTOFOCUS_BLOCKING_STARTUP = false;
+
 // 倒计时到时（Alerting 状态）的提示音旋律。
 // 0 = 超级马里奥「过关」通关音，1 = 最终幻想「胜利」号角，2 = 升级/答对小铃声。
 // 乐谱定义在 buzzer_music.h，可在那里新增旋律后用新的编号引用。

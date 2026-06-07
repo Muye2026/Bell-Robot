@@ -87,6 +87,14 @@ enum class TimerState {
   Alerting,
 };
 
+enum class StartupStage {
+  Boot,
+  Camera,
+  Wifi,
+  Server,
+  Ready,
+};
+
 struct TimerContext {
   TimerState state = TimerState::Idle;
   uint32_t sitStartMs = 0;
@@ -144,6 +152,16 @@ struct DisplayOverlay {
   uint32_t untilMs = 0;
 };
 
+struct StartupFeedback {
+  bool active = false;
+  StartupStage stage = StartupStage::Boot;
+  uint32_t bootStartMs = 0;
+  uint32_t lastFrameMs = 0;
+  const BuzzerMelody *melody = nullptr;
+  size_t melodyIndex = 0;
+  uint32_t melodySegmentEndMs = 0;
+};
+
 struct CapturedCameraFrame {
   camera_fb_t *rawFrame = nullptr;
   camera_fb_t logicalFrame = {};
@@ -179,12 +197,16 @@ bool captureButtonResetConsumed = false;
 bool buzzerActive = false;
 bool wifiStartedAsSta = false;
 bool wifiStartedAsAp = false;
+bool cameraAutofocusActive = false;
 uint32_t sampleCounter = 0;
 char cloudLastError[64] = "not_started";
 BuzzerSequence buzzerSequence;
 MelodyPlayer alertMelody;
 uint32_t alertMelodyGapUntilMs = 0;
 DisplayOverlay displayOverlay;
+StartupFeedback startupFeedback;
+TaskHandle_t startupFeedbackTaskHandle = nullptr;
+bool firstCountdownFrameLogged = false;
 
 esp_err_t sendSamplesList(httpd_req_t *req);
 esp_err_t sendSampleFile(httpd_req_t *req);
@@ -477,6 +499,24 @@ void configureCameraAutofocus(sensor_t *sensor) {
   } else {
     ESP_LOGW(kTag, "camera autofocus wait failed: %s", esp_err_to_name(err));
   }
+}
+
+void cameraAutofocusTask(void *arg) {
+  (void)arg;
+  cameraAutofocusActive = true;
+  ESP_LOGI(kTag, "camera autofocus task start at %lu ms",
+           static_cast<unsigned long>(millis32()));
+  if (cameraMutex != nullptr &&
+      xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(kCameraAfTimeoutMs + 500)) == pdTRUE) {
+    configureCameraAutofocus(esp_camera_sensor_get());
+    xSemaphoreGive(cameraMutex);
+  } else {
+    ESP_LOGW(kTag, "camera autofocus task skipped: camera busy");
+  }
+  cameraAutofocusActive = false;
+  ESP_LOGI(kTag, "camera autofocus task done at %lu ms",
+           static_cast<unsigned long>(millis32()));
+  vTaskDelete(nullptr);
 }
 
 const char *stateLabel(TimerState state) {
@@ -917,7 +957,15 @@ public:
     sensor_t *sensor = esp_camera_sensor_get();
     if (sensor != nullptr) {
       configureCameraSensor(sensor);
-      configureCameraAutofocus(sensor);
+      if (CAMERA_AUTOFOCUS_BLOCKING_STARTUP) {
+        configureCameraAutofocus(sensor);
+      } else {
+        const BaseType_t created =
+            xTaskCreate(cameraAutofocusTask, "camera_af", 4096, nullptr, 4, nullptr);
+        if (created != pdPASS) {
+          ESP_LOGW(kTag, "camera autofocus task create failed");
+        }
+      }
     }
     ESP_LOGI(kTag,
              "camera ready: %ux%u JPEG preview, capture=%ux%u%s",
@@ -934,6 +982,10 @@ public:
       return diagnostics_.present;
     }
     lastSampleMs_ = nowMs;
+    if (cameraAutofocusActive) {
+      diagnostics_.fallbackReason = "autofocus";
+      return diagnostics_.present;
+    }
 
     const bool rawPresent = sampleCameraPresence();
     updateDebouncedPresence(rawPresent);
@@ -1169,15 +1221,6 @@ void buzzerTone(uint32_t freqHz) {
   buzzerActive = true;
 }
 
-void playMelodyBlocking(const BuzzerMelody &melody) {
-  for (size_t i = 0; i < melody.count; ++i) {
-    const BuzzerNote &note = melody.notes[i];
-    buzzerTone(note.freqHz);
-    vTaskDelay(pdMS_TO_TICKS(note.durationMs));
-  }
-  buzzerOff();
-}
-
 const BuzzerMelody &activeAlertMelody() {
   int id = BUZZER_ALERT_MELODY;
   if (id < 0 || static_cast<size_t>(id) >= kBuzzerMelodyCount) {
@@ -1225,6 +1268,196 @@ void updateMelody(uint32_t nowMs) {
 void showDisplayOverlay(const char *message, uint32_t nowMs, uint32_t durationMs) {
   safeCopy(displayOverlay.message, sizeof(displayOverlay.message), message);
   displayOverlay.untilMs = nowMs + durationMs;
+  lastDisplayMs = 0;
+}
+
+const BuzzerMelody &startupFeedbackMelody() {
+  return kStartupMelodyVariants[0];
+}
+
+const char *startupStageLabel(StartupStage stage) {
+  switch (stage) {
+  case StartupStage::Boot:
+    return "BOOT";
+  case StartupStage::Camera:
+    return "CAMERA";
+  case StartupStage::Wifi:
+    return "WIFI";
+  case StartupStage::Server:
+    return "SERVER";
+  case StartupStage::Ready:
+    return "READY";
+  }
+  return "BOOT";
+}
+
+uint8_t startupStageProgress(StartupStage stage) {
+  switch (stage) {
+  case StartupStage::Boot:
+    return 15;
+  case StartupStage::Camera:
+    return 42;
+  case StartupStage::Wifi:
+    return 68;
+  case StartupStage::Server:
+    return 84;
+  case StartupStage::Ready:
+    return 100;
+  }
+  return 0;
+}
+
+void logStartupMilestone(const char *name, uint32_t nowMs) {
+  const uint32_t elapsed =
+      startupFeedback.bootStartMs == 0 ? 0 : nowMs - startupFeedback.bootStartMs;
+  ESP_LOGI(kTag,
+           "startup milestone: %s at %lu ms",
+           name,
+           static_cast<unsigned long>(elapsed));
+}
+
+void drawStartupFrame(uint32_t nowMs, bool force) {
+  if (!STARTUP_FEEDBACK_ENABLED) {
+    return;
+  }
+  if (!force && nowMs - startupFeedback.lastFrameMs < STARTUP_DISPLAY_FRAME_MS) {
+    return;
+  }
+  startupFeedback.lastFrameMs = nowMs;
+
+  const char *stage = startupStageLabel(startupFeedback.stage);
+  uint8_t progress = startupStageProgress(startupFeedback.stage);
+  if (startupFeedback.stage != StartupStage::Ready) {
+    progress = std::min<uint8_t>(99, progress + static_cast<uint8_t>((nowMs / 220) % 8));
+  }
+
+  display.clear();
+  display.textScaled(centeredTextX("BELL", 2), 0, 2, "BELL");
+  display.textScaled(centeredTextX(stage, 1), 24, 1, stage);
+
+  constexpr int barX = 13;
+  constexpr int barY = 42;
+  constexpr int barW = 102;
+  constexpr int barH = 9;
+  for (int x = barX; x < barX + barW; ++x) {
+    display.setPixel(x, barY);
+    display.setPixel(x, barY + barH - 1);
+  }
+  for (int y = barY; y < barY + barH; ++y) {
+    display.setPixel(barX, y);
+    display.setPixel(barX + barW - 1, y);
+  }
+  const int fillW = ((barW - 4) * progress) / 100;
+  for (int x = 0; x < fillW; ++x) {
+    for (int y = 0; y < barH - 4; ++y) {
+      display.setPixel(barX + 2 + x, barY + 2 + y);
+    }
+  }
+
+  const int scanX = barX + 2 + static_cast<int>((nowMs / 80) % (barW - 4));
+  for (int y = 55; y < 61; ++y) {
+    display.setPixel(scanX, y);
+  }
+
+  const char *dots = ".";
+  switch ((nowMs / 350) % 4) {
+  case 0:
+    dots = "";
+    break;
+  case 1:
+    dots = ".";
+    break;
+  case 2:
+    dots = "..";
+    break;
+  default:
+    dots = "...";
+    break;
+  }
+  char bootText[16] = {};
+  snprintf(bootText, sizeof(bootText), "BOOTING%s", dots);
+  if (startupFeedback.stage == StartupStage::Ready) {
+    snprintf(bootText, sizeof(bootText), "START");
+  }
+  display.textScaled(centeredTextX(bootText, 1), 56, 1, bootText);
+  display.flush();
+}
+
+void updateStartupMelody(uint32_t nowMs) {
+  if (!STARTUP_AUDIO_ENABLED || startupFeedback.melody == nullptr ||
+      startupFeedback.melody->notes == nullptr || startupFeedback.melody->count == 0) {
+    return;
+  }
+  if (startupFeedback.melodySegmentEndMs != 0 &&
+      static_cast<int32_t>(nowMs - startupFeedback.melodySegmentEndMs) < 0) {
+    return;
+  }
+  if (startupFeedback.melodyIndex >= startupFeedback.melody->count) {
+    startupFeedback.melody = nullptr;
+    startupFeedback.melodySegmentEndMs = 0;
+    buzzerOff();
+    return;
+  }
+
+  const BuzzerNote &note = startupFeedback.melody->notes[startupFeedback.melodyIndex++];
+  buzzerTone(note.freqHz);
+  startupFeedback.melodySegmentEndMs = nowMs + note.durationMs;
+}
+
+void startupFeedbackTask(void *arg) {
+  (void)arg;
+  while (startupFeedback.active) {
+    const uint32_t nowMs = millis32();
+    updateStartupMelody(nowMs);
+    drawStartupFrame(nowMs, false);
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  buzzerOff();
+  startupFeedbackTaskHandle = nullptr;
+  vTaskDelete(nullptr);
+}
+
+void startStartupFeedback(uint32_t bootStartMs) {
+  firstCountdownFrameLogged = false;
+  startupFeedback = StartupFeedback{};
+  startupFeedback.bootStartMs = bootStartMs;
+  logStartupMilestone("boot_start", bootStartMs);
+
+  if (!STARTUP_FEEDBACK_ENABLED) {
+    return;
+  }
+
+  startupFeedback.active = true;
+  if (STARTUP_AUDIO_ENABLED) {
+    startupFeedback.melody = &startupFeedbackMelody();
+  }
+
+  const uint32_t nowMs = millis32();
+  drawStartupFrame(nowMs, true);
+  logStartupMilestone("oled_first_frame", nowMs);
+
+  const BaseType_t created =
+      xTaskCreate(startupFeedbackTask, "startup_ui", 4096, nullptr, 3, &startupFeedbackTaskHandle);
+  if (created != pdPASS) {
+    startupFeedbackTaskHandle = nullptr;
+    ESP_LOGW(kTag, "startup feedback task create failed");
+  }
+}
+
+void setStartupStage(StartupStage stage, uint32_t nowMs) {
+  if (startupFeedback.stage == stage) {
+    return;
+  }
+  startupFeedback.stage = stage;
+  logStartupMilestone(startupStageLabel(stage), nowMs);
+}
+
+void stopStartupFeedback(uint32_t nowMs) {
+  setStartupStage(StartupStage::Ready, nowMs);
+  startupFeedback.active = false;
+  vTaskDelay(pdMS_TO_TICKS(30));
+  drawStartupFrame(millis32(), true);
+  buzzerOff();
   lastDisplayMs = 0;
 }
 
@@ -1541,6 +1774,10 @@ void drawDisplay(bool isPresent, uint32_t nowMs) {
   display.textScaled(centeredTextX(timerText, kTimerDigitScale), 20, kTimerDigitScale, timerText);
   display.textScaled(centeredTextX(probabilityText, 1), 56, 1, probabilityText);
   display.flush();
+  if (!firstCountdownFrameLogged) {
+    firstCountdownFrameLogged = true;
+    logStartupMilestone("countdown_first_frame", nowMs);
+  }
 }
 
 void logStatus(bool isPresent, uint32_t nowMs) {
@@ -2846,6 +3083,11 @@ void setupButton() {
 } // namespace
 
 extern "C" void app_main(void) {
+  const uint32_t bootStartMs = millis32();
+  buzzerBegin();
+  display.begin();
+  startStartupFeedback(bootStartMs);
+
   normalizeNvsInit();
   loadTimerSettings();
   if (ENABLE_CLOUD_REMOTE) {
@@ -2853,32 +3095,32 @@ extern "C" void app_main(void) {
   } else {
     setCloudError("disabled");
   }
-  buzzerBegin();
-  playMelodyBlocking(kStartupMelody);
   setupButton();
   ESP_ERROR_CHECK(sample_store::init());
-  display.begin();
   if (ENABLE_OLED_DIAGNOSTICS) {
+    startupFeedback.active = false;
     runOledDiagnostics();
+    startStartupFeedback(bootStartMs);
   }
-  display.text(0, 0, "BELL");
-  display.text(0, 1, "START");
-  display.flush();
 
+  setStartupStage(StartupStage::Camera, millis32());
   const bool cameraOk = presenceDetector.begin();
-  if (!cameraOk) {
-    display.clear();
-    display.text(0, 0, "Camera failed");
-    display.text(0, 1, "Check pins");
-    display.flush();
-  }
+  logStartupMilestone(cameraOk ? "camera_ready" : "camera_failed", millis32());
 
+  setStartupStage(StartupStage::Wifi, millis32());
   startWifi();
+  logStartupMilestone("wifi_ready", millis32());
+  setStartupStage(StartupStage::Server, millis32());
   startWebServer();
+  logStartupMilestone("web_ready", millis32());
   if (ENABLE_CLOUD_REMOTE) {
     xTaskCreate(cloudPollTask, "cloud_poll", 8192, nullptr, 5, nullptr);
   }
 
+  stopStartupFeedback(millis32());
+  if (!cameraOk) {
+    showDisplayOverlay("CAM FAIL", millis32(), 3000);
+  }
   ESP_LOGI(kTag, "ready. local URL: http://192.168.4.1/ when AP is active");
   while (true) {
     const uint32_t nowMs = millis32();
