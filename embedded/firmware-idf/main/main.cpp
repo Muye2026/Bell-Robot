@@ -1169,6 +1169,15 @@ void buzzerTone(uint32_t freqHz) {
   buzzerActive = true;
 }
 
+void playMelodyBlocking(const BuzzerMelody &melody) {
+  for (size_t i = 0; i < melody.count; ++i) {
+    const BuzzerNote &note = melody.notes[i];
+    buzzerTone(note.freqHz);
+    vTaskDelay(pdMS_TO_TICKS(note.durationMs));
+  }
+  buzzerOff();
+}
+
 const BuzzerMelody &activeAlertMelody() {
   int id = BUZZER_ALERT_MELODY;
   if (id < 0 || static_cast<size_t>(id) >= kBuzzerMelodyCount) {
@@ -2845,6 +2854,7 @@ extern "C" void app_main(void) {
     setCloudError("disabled");
   }
   buzzerBegin();
+  playMelodyBlocking(kStartupMelody);
   setupButton();
   ESP_ERROR_CHECK(sample_store::init());
   display.begin();

@@ -69,9 +69,22 @@ constexpr BuzzerNote kMelodyLevelUp[] = {
     {bm::G6, 360},
 };
 
+// 上电自检提示音：塞尔达风格的原创冒险小铃声，不照搬原曲旋律。
+constexpr BuzzerNote kMelodyStartupAdventure[] = {
+    {bm::C5, 90},  {bm::REST, 20}, {bm::E5, 90},  {bm::REST, 20},
+    {bm::G5, 110}, {bm::REST, 20}, {bm::C6, 150}, {bm::REST, 35},
+    {bm::G5, 95},  {bm::REST, 20}, {bm::C6, 120}, {bm::REST, 20},
+    {bm::E6, 260}, {bm::REST, 45}, {bm::G6, 360},
+};
+
 struct BuzzerMelody {
   const BuzzerNote *notes;
   size_t count;
+};
+
+constexpr BuzzerMelody kStartupMelody = {
+    kMelodyStartupAdventure,
+    sizeof(kMelodyStartupAdventure) / sizeof(kMelodyStartupAdventure[0]),
 };
 
 // 与 app_config.h 中 BUZZER_ALERT_MELODY 的编号一一对应。
