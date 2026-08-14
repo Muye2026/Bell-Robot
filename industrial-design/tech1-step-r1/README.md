@@ -41,7 +41,7 @@
 当前 Mac 主链路：
 
 ```bash
-/Users/muye11/Desktop/Project/DXL/backend/.venv/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant all
+/Users/muye11/.venvs/cad/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant all
 ```
 
 完整说明见：

@@ -13,10 +13,10 @@
 
 不依赖 `FreeCADCmd`、`freecad`、Windows 路径或 VTK。
 
-当前已验证使用 DXL 项目的 Python CAD 环境：
+当前已验证使用全局 CAD Python 环境（build123d + OCP 7.9，位于 `~/.venvs/cad`，不依赖任何项目）：
 
 ```bash
-/Users/muye11/Desktop/Project/DXL/backend/.venv/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py
+/Users/muye11/.venvs/cad/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py
 ```
 
 脚本使用：
@@ -57,19 +57,19 @@ CAD 输出：
 只生成第一轮：
 
 ```bash
-/Users/muye11/Desktop/Project/DXL/backend/.venv/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant initial
+/Users/muye11/.venvs/cad/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant initial
 ```
 
 只生成最终轮：
 
 ```bash
-/Users/muye11/Desktop/Project/DXL/backend/.venv/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant final
+/Users/muye11/.venvs/cad/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant final
 ```
 
 完整闭环：
 
 ```bash
-/Users/muye11/Desktop/Project/DXL/backend/.venv/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant all
+/Users/muye11/.venvs/cad/bin/python industrial-design/tech1-ocp-r1/tech1_ocp_pipeline.py --variant all
 ```
 
 ## 当前建模内容
