@@ -7,7 +7,7 @@
 //
 // 无源蜂鸣器由 LEDC PWM 驱动，可以逐个音符改变方波频率，因此能播放真实旋律。
 // 每个音符是 {频率Hz, 时长ms}，频率为 0 表示休止（静音那一段时长）。
-// 整套播放是非阻塞的，由 main.cpp 里的 MelodyPlayer 在主循环里逐段推进。
+// 整套播放是非阻塞的，由 buzzer_player.cpp 里的 BuzzerPlayer 在主循环里逐段推进。
 //
 // 想新增旋律：在下面照格式加一张表，再到 app_config.h 的 BUZZER_ALERT_MELODY
 // 增加对应编号即可。

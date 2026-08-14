@@ -1,6 +1,14 @@
 idf_component_register(
   SRCS
     "main.cpp"
+    "app_state.cpp"
+    "sedentary_timer.cpp"
+    "presence_detector.cpp"
+    "buzzer_player.cpp"
+    "display_ui.cpp"
+    "wifi_net.cpp"
+    "cloud_client.cpp"
+    "web_ui.cpp"
     "sample_store.cpp"
     "seat_model.cpp"
     "ssd1306_spi.cpp"

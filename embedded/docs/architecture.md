@@ -23,15 +23,21 @@ flowchart LR
 
 ## 固件模块
 
-- `camera_capture`：采集灰度图，提供本地预览、样本导出和云端按需 JPEG 快照。
-- `seat_model`：对 `8x8` 灰度特征做本地 int8 二分类，输出桌前坐姿概率。
-- `presence_detector`：模型优先，模型不可用时回退 ROI 灰度差分，并做连续帧去抖。
-- `sedentary_timer`：处理待机、计时、暂离暂停、超时重置和提醒状态。
-- `button_input`：保留 `GPIO1` 的消警/重校准逻辑，并新增 `GPIO2` 采样按钮短按触发。
-- `sample_store`：把第二按钮抓到的 JPEG 和元数据写入 SPIFFS，固定保留最新 64 组样本。
-- `display_ui`：OLED 只显示状态、倒计时和 `PROB xx%`。
-- `web_api`：本地 AP 调试接口，包括 `/capture`、`/status`、`/settings`、`/cloud`、`/reset`、`/label`、`/samples`、`/samples/list`、`/samples/file`、`/samples/meta`、`/samples/clear`、`/samples/capture`。
-- `cloud_client`：STA 联网后每秒轮询云中转，上报状态并执行云端命令。
+`firmware-idf/main/` 按职责拆分（2026-08-14 起）：
+
+- `main.cpp`：启动流程编排 + 主循环（采样 → 按钮 → 计时 → 蜂鸣器 → 显示 → 日志）。
+- `app_state.h/.cpp`：跨模块共享状态与胶水层——NVS 设置存取、设备身份（MAC device_id / 随机 token）、按键消抖与事件处理、样本采集、`/status` JSON 生成、重启请求。
+- `sedentary_timer.h/.cpp`：久坐计时状态机（Idle/Sitting/AwayGrace/AwayWarning/Alerting），纯逻辑、无 ESP 依赖，配套 `test/test_sedentary_timer.cpp` 主机端单元测试。
+- `presence_detector.h/.cpp`：摄像头帧锁/采集/旋转/JPEG 转换，`PresenceDetector`（模型优先，模型不可用时回退 ROI 灰度差分，连续帧去抖）。
+- `buzzer_player.h/.cpp`：LEDC 蜂鸣器驱动、短提示序列、到时旋律循环播放（乐谱见 `buzzer_music.h`）。
+- `display_ui.h/.cpp`：OLED 启动画面（BOOT/CAMERA/WIFI/SERVER 进度条）、倒计时主界面、瞬时 overlay、OLED 自检。
+- `web_ui.h/.cpp`：本地 HTTP 接口，包括 `/`、`/capture`、`/stream`、`/status`、`/settings`、`/reset`、`/label`、`/samples/*`、`/cloud*`。
+- `ota_update.h/.cpp`：`/ota` 网页固件升级，写入空闲 OTA 分区（`ota_0`/`ota_1` 双分区）后校验重启。
+- `wifi_net.h/.cpp`：AP 直连 / STA 云远程模式切换与连接状态查询。
+- `cloud_client.h/.cpp`：STA 联网后每秒轮询云中转，上报状态并执行云端命令（capture/set_settings/reset）。
+- `sample_store.h/.cpp`：SPIFFS 采样缓存（JPEG + 元数据，固定保留最新 64 组）。
+- `seat_model.h/.cpp`：对 `8x8` 灰度特征做本地 int8 二分类，输出桌前坐姿概率。
+- `ssd1306_spi.h/.cpp`：SSD1306 SPI 驱动。
 
 ## 设备身份
 
