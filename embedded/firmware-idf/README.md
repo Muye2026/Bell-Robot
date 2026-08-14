@@ -78,9 +78,10 @@ powershell -ExecutionPolicy Bypass -File .\tools\build-idf.ps1 -Flash -Port COM1
 
 ## 本地接口
 
-- `/`：摄像头预览、计时设置、重置、样本采集入口
+- `/`：摄像头预览、计时设置、重置、样本采集入口。预览为 JS 每 500ms 拉取 `/capture` 单帧（页面隐藏时自动暂停），不再使用 `/stream` 常驻连接——esp_http_server 是单任务模型，常驻流会阻塞其它所有请求
 - `/ota`：固件升级页面（见上）
-- `/capture`：当前 JPEG 画面
+- `/stream`：MJPEG 流（保留，直连使用；打开期间会独占服务器任务）
+- `/capture`：当前 JPEG 画面（640x480 已旋转）
 - `/status`：状态 JSON，包含模型概率、计时、联网诊断和 `cloud_enabled`
 - `/settings`：读取/保存倒计时和离场容忍分钟数
 - `/reset`：重置当前计时并重新校准

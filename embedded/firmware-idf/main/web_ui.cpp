@@ -37,26 +37,31 @@ esp_err_t sendIndex(httpd_req_t *req) {
       "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
       "<title>Bell Robot Camera</title><style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}"
       "main{max-width:760px;margin:20px auto;padding:0 14px}.preview{width:min(100%,360px);aspect-ratio:3/4;background:#222;overflow:hidden;display:flex;align-items:center;justify-content:center;margin:auto}"
-      "#frame{width:133.333%;height:75%;display:block;transform:rotate(90deg)}"
+      "#frame{width:100%;height:100%;object-fit:contain;display:block;background:#222}"
       "button,a,input{font-size:18px}button,a{padding:10px 14px;margin:6px 6px 6px 0;display:inline-block}"
       "a{color:#8cc8ff}.settings{margin:16px 0;padding:12px;border:1px solid #333;background:#181818}"
       "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
       "#msg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
-      "<h2>Bell Robot Camera</h2><div class='preview'><img id='frame' src='/stream'></div>"
+      "<h2>Bell Robot Camera</h2><div class='preview'><img id='frame' src='/capture'></div>"
       "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a><a href='/ota'>Firmware</a></p>"
       "<form class='settings' onsubmit='saveSettings(event)'>"
       "<label for='sit'>倒计时（分钟）</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
       "<label for='away'>离场容忍（分钟）</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
       "<button type='submit'>保存设置</button><span id='msg'></span></form>"
       "<p><a href='/label?class=absent'>Save absent sample</a><a href='/label?class=seated'>Save seated sample</a></p>"
-      "<script>function refreshFrame(){document.getElementById('frame').src='/stream?ts='+Date.now()}"
+      "<script>const frame=document.getElementById('frame');let previewTimer=null,previewBusy=false;"
+      "function refreshFrame(){if(previewBusy)return;previewBusy=true;frame.onload=()=>{previewBusy=false};frame.onerror=()=>{previewBusy=false};frame.src='/capture?ts='+Date.now()}"
+      "function startPreview(){if(previewTimer)return;previewTimer=setInterval(refreshFrame,500)}"
+      "function stopPreview(){if(previewTimer){clearInterval(previewTimer);previewTimer=null}}"
+      "document.addEventListener('visibilitychange',()=>{document.hidden?stopPreview():startPreview()})"
       "async function loadSettings(){let r=await fetch('/settings');let s=await r.json();document.getElementById('sit').value=s.sit_minutes;document.getElementById('away').value=s.away_minutes}"
       "async function saveSettings(e){e.preventDefault();let sit=document.getElementById('sit'),away=document.getElementById('away'),msg=document.getElementById('msg');msg.textContent='Saving...';"
       "let b='sit_minutes='+encodeURIComponent(sit.value)+'&away_minutes='+encodeURIComponent(away.value);"
       "let r=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b});"
       "msg.textContent=r.ok?'Saved':'Save failed'}"
-      "loadSettings()</script></main></body></html>";
+      "loadSettings();startPreview();refreshFrame()</script></main></body></html>";
   httpd_resp_set_type(req, "text/html; charset=utf-8");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -65,12 +70,12 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
       "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
       "<title>Bell Robot Camera</title><style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}"
       "main{max-width:760px;margin:20px auto;padding:0 14px}.preview{width:min(100%,360px);aspect-ratio:3/4;background:#222;overflow:hidden;display:flex;align-items:center;justify-content:center;margin:auto}"
-      "#frame{width:133.333%;height:75%;display:block;transform:rotate(90deg)}"
+      "#frame{width:100%;height:100%;object-fit:contain;display:block;background:#222}"
       "button,a,input{font-size:18px}button,a{padding:10px 14px;margin:6px 6px 6px 0;display:inline-block}"
       "a{color:#8cc8ff}.settings{margin:16px 0;padding:12px;border:1px solid #333;background:#181818}"
       "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
       ".hint{color:#aaa;font-size:14px}#msg,#cloudMsg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
-      "<h2>Bell Robot Camera</h2><div class='preview'><img id='frame' src='/stream'></div>"
+      "<h2>Bell Robot Camera</h2><div class='preview'><img id='frame' src='/capture'></div>"
       "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a><a href='/ota'>Firmware</a></p>"
       "<form class='settings' onsubmit='saveSettings(event)'>"
       "<label for='sit'>Timer minutes</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
@@ -84,7 +89,11 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
       "<p class='hint'>Device ID: <span id='device'>-</span></p>"
       "<button type='submit'>Save cloud</button><button type='button' onclick='forgetCloud()'>Forget cloud</button><span id='cloudMsg'></span></form>"
       "<p><a href='/label?class=absent'>Save absent sample</a><a href='/label?class=seated'>Save seated sample</a></p>"
-      "<script>function refreshFrame(){document.getElementById('frame').src='/stream?ts='+Date.now()}"
+      "<script>const frame=document.getElementById('frame');let previewTimer=null,previewBusy=false;"
+      "function refreshFrame(){if(previewBusy)return;previewBusy=true;frame.onload=()=>{previewBusy=false};frame.onerror=()=>{previewBusy=false};frame.src='/capture?ts='+Date.now()}"
+      "function startPreview(){if(previewTimer)return;previewTimer=setInterval(refreshFrame,500)}"
+      "function stopPreview(){if(previewTimer){clearInterval(previewTimer);previewTimer=null}}"
+      "document.addEventListener('visibilitychange',()=>{document.hidden?stopPreview():startPreview()})"
       "async function loadSettings(){let r=await fetch('/settings');let s=await r.json();document.getElementById('sit').value=s.sit_minutes;document.getElementById('away').value=s.away_minutes}"
       "async function loadCloud(){let r=await fetch('/cloud');let s=await r.json();document.getElementById('ssid').value=s.ssid||'';document.getElementById('server').value=s.server_url||'';document.getElementById('device').textContent=s.device_id||'-'}"
       "async function saveSettings(e){e.preventDefault();let sit=document.getElementById('sit'),away=document.getElementById('away'),msg=document.getElementById('msg');msg.textContent='Saving...';"
@@ -93,8 +102,9 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
       "msg.textContent=r.ok?'Saved':'Save failed'}"
       "async function saveCloud(e){e.preventDefault();let ids=['ssid','pass','server'],p=new URLSearchParams(),msg=document.getElementById('cloudMsg');ids.forEach(id=>p.append(document.getElementById(id).name,document.getElementById(id).value));msg.textContent='Saving...';let r=await fetch('/cloud',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});let t=await r.text();msg.textContent=r.ok?'Saved, rebooting...':('Save failed: '+t)}"
       "async function forgetCloud(){let msg=document.getElementById('cloudMsg');msg.textContent='Clearing...';let r=await fetch('/cloud/forget',{method:'POST'});let t=await r.text();msg.textContent=r.ok?'Cleared, rebooting...':('Clear failed: '+t)}"
-      "loadSettings();loadCloud()</script></main></body></html>";
+      "loadSettings();loadCloud();startPreview();refreshFrame()</script></main></body></html>";
   httpd_resp_set_type(req, "text/html; charset=utf-8");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
 
