@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ota_update.h"
 #include "presence_detector.h"
 #include "sample_store.h"
 #include "sedentary_timer.h"
@@ -42,7 +43,7 @@ esp_err_t sendIndex(httpd_req_t *req) {
       "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
       "#msg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
       "<h2>Bell Robot Camera</h2><div class='preview'><img id='frame' src='/stream'></div>"
-      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a></p>"
+      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a><a href='/ota'>Firmware</a></p>"
       "<form class='settings' onsubmit='saveSettings(event)'>"
       "<label for='sit'>倒计时（分钟）</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
       "<label for='away'>离场容忍（分钟）</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
@@ -70,7 +71,7 @@ esp_err_t sendIndexCloud(httpd_req_t *req) {
       "label{display:block;margin:10px 0 4px}input{box-sizing:border-box;width:100%;padding:10px;background:#222;color:#eee;border:1px solid #555}"
       ".hint{color:#aaa;font-size:14px}#msg,#cloudMsg{min-height:24px;color:#9fdb9f}</style></head><body><main>"
       "<h2>Bell Robot Camera</h2><div class='preview'><img id='frame' src='/stream'></div>"
-      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a></p>"
+      "<p><button onclick='refreshFrame()'>Refresh</button><a href='/status'>Status</a><a href='/reset'>Reset</a><a href='/samples'>Samples</a><a href='/ota'>Firmware</a></p>"
       "<form class='settings' onsubmit='saveSettings(event)'>"
       "<label for='sit'>Timer minutes</label><input id='sit' name='sit_minutes' type='number' min='1' max='180' step='1' required>"
       "<label for='away'>Away tolerance minutes</label><input id='away' name='away_minutes' type='number' min='1' max='5' step='1' required>"
@@ -759,6 +760,16 @@ void startWebServer() {
   samplesCapture.method = HTTP_POST;
   samplesCapture.handler = handleSampleCapture;
 
+  httpd_uri_t otaPage = {};
+  otaPage.uri = "/ota";
+  otaPage.method = HTTP_GET;
+  otaPage.handler = sendOtaPage;
+
+  httpd_uri_t otaUpload = {};
+  otaUpload.uri = "/ota";
+  otaUpload.method = HTTP_POST;
+  otaUpload.handler = handleOtaUpload;
+
   httpd_uri_t cloudGet = {};
   cloudGet.uri = "/cloud";
   cloudGet.method = HTTP_GET;
@@ -788,6 +799,8 @@ void startWebServer() {
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &sampleMeta));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &samplesClear));
   ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &samplesCapture));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &otaPage));
+  ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &otaUpload));
   if (ENABLE_CLOUD_REMOTE) {
     ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudGet));
     ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &cloudPost));

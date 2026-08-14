@@ -9,6 +9,7 @@ idf_component_register(
     "wifi_net.cpp"
     "cloud_client.cpp"
     "web_ui.cpp"
+    "ota_update.cpp"
     "sample_store.cpp"
     "seat_model.cpp"
     "ssd1306_spi.cpp"
@@ -24,4 +25,6 @@ idf_component_register(
     nvs_flash
     esp32-camera
     spiffs
+    app_update
+    esp_partition
 )
