@@ -83,4 +83,5 @@ python model\train_seat_model.py --dataset model\dataset --out embedded\firmware
 - 2026-05-10：主线摄像头切换为 `DC5640 AF 120度`，固件仍按 OV5640 类接口识别成功。
 - 2026-05-20：新增 `ENABLE_CLOUD_REMOTE` 编译开关，当前默认 AP-only，用于本地开发。
 - 2026-06-03：新增第二按钮样本缓存，设备侧支持 `/samples` 预览、下载与清空。
-- 2026-08-14：工程基础改造。`main.cpp` 按模块拆分（sedentary_timer / presence_detector / buzzer_player / display_ui / web_ui / ota_update / wifi_net / cloud_client / app_state），行为保持等价；新增 `sedentary_timer` 主机端单元测试（53 项断言全过）；新增 `/ota` 网页固件升级与 `ota_0/ota_1` 双 OTA 分区表；`sdkconfig.defaults` 锁定 `esp32s3` 目标；新增 `tools/build.sh`（macOS/Linux）与 GitHub Actions CI（主机测试 + 模型脚本冒烟 + ESP-IDF 构建）。本机 ESP-IDF v6.0.2 干净构建通过，OTA 实机流程待上板验证。
+- 2026-08-14：工程基础改造。`main.cpp` 按模块拆分（sedentary_timer / presence_detector / buzzer_player / display_ui / web_ui / ota_update / wifi_net / cloud_client / app_state），行为保持等价；新增 `sedentary_timer` 主机端单元测试（53 项断言全过）；新增 `/ota` 网页固件升级与 `ota_0/ota_1` 双 OTA 分区表；`sdkconfig.defaults` 锁定 `esp32s3` 目标；新增 `tools/build.sh`（macOS/Linux）与 GitHub Actions CI（主机测试 + 模型脚本冒烟 + ESP-IDF 构建）。本机 ESP-IDF v6.0.2 干净构建通过。
+- 2026-08-14：实机验证（串口日志）。全量刷写后启动正常：OLED 首帧 258ms、摄像头 OV5640 + 自动对焦、AP 与网页服务就绪、倒计时首帧 1661ms；NVS 计时设置保留；坐姿识别模型概率 89–90%，WAIT→SIT 转移正常。`/ota` 上传流程待手机端验证。
