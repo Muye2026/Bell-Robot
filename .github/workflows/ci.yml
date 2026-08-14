@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  host-tests:
+    name: Host unit tests (timer state machine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compiler
+        run: sudo apt-get update && sudo apt-get install -y g++
+      - name: Build and run host tests
+        run: ./tools/test-host.sh
+        working-directory: embedded/firmware-idf
+
+  model-scripts:
+    name: Model scripts smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Syntax check model scripts
+        run: |
+          python -m py_compile \
+            model/train_seat_model.py \
+            model/prepare_seed_dataset.py \
+            model/import_confirmed_openverse.py \
+            model/import_confirmed_preview_sheets.py \
+            model/import_labeled_screenshots.py \
+            model/candidate_preview/curate_openverse_candidates.py
+      - name: CLI smoke test
+        run: python model/train_seat_model.py --help > /dev/null
+
+  firmware-build:
+    name: Firmware build (ESP-IDF, esp32s3)
+    runs-on: ubuntu-latest
+    container: espressif/idf:release-v6.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py build
+        working-directory: embedded/firmware-idf
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bell-robot-firmware-esp32s3
+          path: |
+            embedded/firmware-idf/build/bell_robot_seat_model.bin
+            embedded/firmware-idf/build/bootloader/bootloader.bin
+            embedded/firmware-idf/build/partition_table/partition-table.bin
+          if-no-files-found: error
