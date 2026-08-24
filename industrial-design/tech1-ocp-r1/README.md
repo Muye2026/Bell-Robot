@@ -1,5 +1,9 @@
 # Bell Robot Tech One A OCP CAD Pipeline R1
 
+> 外观主线已移到 `industrial-design/tech1-cnc-r2/`（60 x 20 x 31mm 小砖，四周一圈 CNC 铝框，正面整面 LED 点阵）。本目录保留为历史版本和尺寸参考。
+>
+> 注意：这里的 `make_shell_solid` 生成的主体面朝向不一致，体积为负。只做导出和渲染没问题，但不能直接拿去做布尔运算，否则「切」会变成「并」。详见 `tech1-cnc-r1/README.md`。
+
 本目录是 `Tech One A` 在当前 Mac 上可运行的 CAD 建模、导出、渲染、对比和迭代闭环。它替代旧的 `tech1-step-r1` Windows FreeCAD 主链路，但仍参考旧脚本里的尺寸、命名和审阅输出思路。
 
 ## 参考资料
