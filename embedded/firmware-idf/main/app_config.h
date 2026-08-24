@@ -8,6 +8,20 @@ static constexpr uint32_t DEFAULT_SIT_TARGET_MS = 45UL * 60UL * 1000UL;
 static constexpr uint32_t AWAY_GRACE_MS = 10UL * 1000UL;
 static constexpr uint32_t DEFAULT_AWAY_RESET_MS = 1UL * 60UL * 1000UL;
 
+// Display backend selection.
+//   DISPLAY_BACKEND_SSD1306    current hardware: SPI SSD1306 128x64 OLED
+//   DISPLAY_BACKEND_LED_MATRIX tech1-cnc-r1 enclosure: IS31FL3733 perforated
+//                              LED dot matrix behind the milled aluminium front
+//
+// The UI does not branch on this. Layout is derived from the backend's reported
+// canvas size in display_layout.h, so switching backends changes what fits, not
+// which code runs.
+#define DISPLAY_BACKEND_SSD1306 0
+#define DISPLAY_BACKEND_LED_MATRIX 1
+#ifndef DISPLAY_BACKEND
+#define DISPLAY_BACKEND DISPLAY_BACKEND_SSD1306
+#endif
+
 // Display: SPI SSD1306 128x64 module with pins SCK/MOSI/RES/DC/CS.
 // Render a 128x64 logical canvas directly into the SSD1306 page buffer.
 static constexpr int OLED_PHYSICAL_WIDTH = 128;
@@ -20,6 +34,26 @@ static constexpr int PIN_OLED_CLK = 48;
 static constexpr int PIN_OLED_DC = 41;
 static constexpr int PIN_OLED_CS = 42;
 static constexpr int PIN_OLED_RESET = 40;
+
+// LED dot matrix (IS31FL3733), one chip per 192 dots.
+//   32 x 10 -> industrial-design/tech1-cnc-r2, 1.4mm pitch, 2 chips (current)
+//   32 x 8  -> tech1-cnc-r1 matrix-a, 2.0mm pitch, 2 chips
+//   32 x 16 -> tech1-cnc-r1 matrix-b, 1.6mm pitch, 3 chips
+// 32 columns is the floor, not a preference: MM:SS in the shared 5x7 font needs
+// 30, so anything narrower cannot show the countdown at all.
+// Pin choice avoids GPIO33-37, which the N16R8 module uses for octal PSRAM.
+// Not yet verified on hardware.
+static constexpr int MATRIX_WIDTH = 32;
+static constexpr int MATRIX_HEIGHT = 10;
+static constexpr int PIN_MATRIX_SDA = 38;
+static constexpr int PIN_MATRIX_SCL = 39;
+static constexpr int MATRIX_I2C_PORT = 0;
+static constexpr uint32_t MATRIX_I2C_HZ = 400000;
+// Set by the ADDR1/ADDR2 strap pins on each driver. Needs at least as many
+// entries as MATRIX_WIDTH * MATRIX_HEIGHT / 192 requires.
+static constexpr uint8_t MATRIX_I2C_ADDRESSES[] = {0x50, 0x53, 0x5a};
+static constexpr uint8_t MATRIX_GLOBAL_CURRENT = 0x40;
+static constexpr uint8_t MATRIX_DEFAULT_PWM = 0xa0;
 
 // Output and input.
 static constexpr int PIN_BUZZER = 21;

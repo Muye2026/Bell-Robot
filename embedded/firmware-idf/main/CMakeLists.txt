@@ -5,7 +5,10 @@ idf_component_register(
     "sedentary_timer.cpp"
     "presence_detector.cpp"
     "buzzer_player.cpp"
+    "display_backend.cpp"
+    "display_layout.cpp"
     "display_ui.cpp"
+    "led_matrix_is31fl3733.cpp"
     "wifi_net.cpp"
     "cloud_client.cpp"
     "web_ui.cpp"
@@ -21,6 +24,7 @@ idf_component_register(
     esp-tls
     esp_timer
     esp_driver_gpio
+    esp_driver_i2c
     esp_driver_ledc
     nvs_flash
     esp32-camera
@@ -28,3 +32,10 @@ idf_component_register(
     app_update
     esp_partition
 )
+
+# 显示后端可以在构建时覆盖，不必改 app_config.h：
+#   idf.py -DDISPLAY_BACKEND=1 build     # IS31FL3733 LED 点阵
+# 不传时用 app_config.h 里的默认值（SSD1306）。
+if(DEFINED DISPLAY_BACKEND)
+  target_compile_definitions(${COMPONENT_LIB} PUBLIC DISPLAY_BACKEND=${DISPLAY_BACKEND})
+endif()
