@@ -6,6 +6,8 @@ ESP32-S3 久坐提醒器固件。设备本地完成坐姿识别、倒计时、OL
 
 - 固件：`firmware-idf/`（2026-08-14 起按模块拆分，见 `firmware-idf/README.md`）
 - 硬件：Freenove ESP32-S3 N16R8 CAM + DC5640 AF 120度 + SPI SSD1306 OLED + 蜂鸣器 + 双按键
+- 外观：`industrial-design/tech1-cnc-r2/`，`60 x 20 x 31mm` 小砖，四周一圈 CNC 铝框，正面整面 `32x10` LED 点阵，深度对齐 Studio Display 外壳厚度。硬件未采购，OLED 仍是台面开发主线
+- 显示后端：编译期二选一，`idf.py -DDISPLAY_BACKEND=1 build` 切到点阵；界面布局按画布尺寸自适应，不需要改 UI 代码
 - 构建目标：`esp32s3`（`sdkconfig.defaults` 已锁定，Windows 脚本 `tools/build-idf.ps1` 同样执行 `set-target esp32s3`）
 - 网络：当前默认 AP-only，热点名 `Bell-Robot`，密码 `12345678`
 - 云端：`cloud-relay/` 仍保留；将 `ENABLE_CLOUD_REMOTE` 改为 `true` 后可恢复 STA 云远程
@@ -85,3 +87,4 @@ python model\train_seat_model.py --dataset model\dataset --out embedded\firmware
 - 2026-06-03：新增第二按钮样本缓存，设备侧支持 `/samples` 预览、下载与清空。
 - 2026-08-14：工程基础改造。`main.cpp` 按模块拆分（sedentary_timer / presence_detector / buzzer_player / display_ui / web_ui / ota_update / wifi_net / cloud_client / app_state），行为保持等价；新增 `sedentary_timer` 主机端单元测试（53 项断言全过）；新增 `/ota` 网页固件升级与 `ota_0/ota_1` 双 OTA 分区表；`sdkconfig.defaults` 锁定 `esp32s3` 目标；新增 `tools/build.sh`（macOS/Linux）与 GitHub Actions CI（主机测试 + 模型脚本冒烟 + ESP-IDF 构建）。本机 ESP-IDF v6.0.2 干净构建通过。
 - 2026-08-14：实机验证（串口日志）。全量刷写后启动正常：OLED 首帧 258ms、摄像头 OV5640 + 自动对焦、AP 与网页服务就绪、倒计时首帧 1661ms；NVS 计时设置保留；坐姿识别模型概率 89–90%，WAIT→SIT 转移正常。`/ota` 上传流程待手机端验证。
+- 2026-08-24：外观方案改为铝合金 CNC + LED 点阵显示。先出 `industrial-design/tech1-cnc-r1/`（`130x34x18mm`，穿孔铝片），随后收敛到 `tech1-cnc-r2/`（`60x20x31mm` 小砖，四周一圈铝框，正面整面点阵，无穿孔，深度对齐 Studio Display）。固件同步做显示层抽象：`DisplayBackend` + 按画布尺寸推导的 `display_layout`，新增 IS31FL3733 点阵后端和 `-DDISPLAY_BACKEND=1` 构建开关，`128x64` OLED 布局逐像素不变。新增 207 项显示布局主机端断言。字库、进度条几何和演示状态与建模脚本共用，两边对同一状态生成逐点相同的帧。点阵硬件尚未采购，驱动未上板验证。

@@ -26,7 +26,11 @@ static constexpr bool ENABLE_CLOUD_REMOTE = false;
 | `sedentary_timer.h/.cpp` | 久坐计时状态机（纯逻辑，可主机单测） |
 | `presence_detector.h/.cpp` | 摄像头采集 + 桌前坐姿检测（模型优先 + ROI 差分回退） |
 | `buzzer_player.h/.cpp` | 蜂鸣器驱动 + 到时旋律/短提示播放 |
-| `display_ui.h/.cpp` | OLED 启动画面、倒计时界面、overlay、OLED 自检 |
+| `display_ui.h/.cpp` | 显示编排：启动画面、倒计时界面、overlay、OLED 自检 |
+| `display_backend.h/.cpp` | 显示后端抽象 + 共享 5x7 字库与文字渲染（无 ESP 依赖，可主机单测） |
+| `display_layout.h/.cpp` | 按画布尺寸推导的界面布局与帧内容（纯逻辑，可主机单测） |
+| `ssd1306_spi.h/.cpp` | SSD1306 SPI 后端 |
+| `led_matrix_is31fl3733.h/.cpp` | IS31FL3733 LED 点阵后端（尚未实机验证） |
 | `web_ui.h/.cpp` | 本地 HTTP 接口与页面 |
 | `ota_update.h/.cpp` | AP 网页 OTA 升级 |
 | `wifi_net.h/.cpp` | AP / STA 网络模式切换 |
@@ -34,7 +38,31 @@ static constexpr bool ENABLE_CLOUD_REMOTE = false;
 | `sample_store.h/.cpp` | SPIFFS 采样缓存 |
 | `seat_model.h/.cpp` | 8x8 灰度 int8 逻辑回归推理 |
 
-主机单元测试在 `test/`（`sedentary_timer` 状态机），不依赖 ESP-IDF。
+主机单元测试在 `test/`（`sedentary_timer` 状态机、`display_layout` 布局与文字渲染），不依赖 ESP-IDF。
+
+## 显示后端
+
+界面代码不分支处理屏幕类型。后端通过 `width()/height()` 上报画布尺寸，`display_layout.h` 据此推导布局：
+
+| 画布 | Profile | 内容 |
+| --- | --- | --- |
+| `128x64` SSD1306 OLED | `Rich` | 状态行 + 大号倒计时（scale 4）+ `PROB` 行 |
+| `32x10` 点阵（tech1-cnc-r2 主线） | `Compact` | 倒计时 + 底部进度条，10 行正好是这套内容的下界 |
+| `32x16` 点阵 | `Compact` | 同上，上下留白更多 |
+| `32x8` 点阵 | `Minimal` | 只有倒计时，八行被 5x7 字形占满 |
+
+`Compact` 的门槛不是拍脑袋定的：倒计时 7 行 + 间隔 1 行 + 进度条 2 行 = 10 行。建模脚本 `industrial-design/tech1-cnc-r2/` 引用同一条规则来判断点阵行数够不够。
+
+切换后端不需要改代码：
+
+```bash
+idf.py -DDISPLAY_BACKEND=1 build     # IS31FL3733 LED 点阵
+idf.py build                         # 默认 SSD1306 OLED
+```
+
+点阵尺寸、I2C 引脚和芯片地址在 `main/app_config.h`；`(x,y) -> (芯片,SW,CS)` 映射在 `led_matrix_is31fl3733.cpp` 的 `matrixTarget()`，打样前必须按 LED PCB 实际走线对齐。
+
+5x7 字库、进度条轨道几何和演示状态都与 `industrial-design/tech1-cnc-r2/` 的点亮渲染共用，两边对同一状态生成逐点相同的帧——外观评审图里的每一个点就是设备实际会点亮的点。
 
 ## 构建
 
@@ -45,7 +73,7 @@ cd embedded/firmware-idf
 ./tools/build.sh                    # 构建（默认找 ~/esp/esp-idf-v6.0.2，可用 IDF_PATH 覆盖）
 ./tools/build.sh set-target         # 强制重新指定 esp32s3 目标
 ./tools/build.sh --flash /dev/cu.usbmodem01
-./tools/test-host.sh                # 主机端状态机单元测试
+./tools/test-host.sh                # 主机端单元测试（计时状态机 + 显示布局）
 ```
 
 ### Windows
@@ -140,4 +168,5 @@ AP-only 模式不注册 `/cloud` 和 `/cloud/forget`。
 - 2026-06-03：新增第二按钮采样缓存、`/samples` 页面和 4MB SPIFFS 样本分区。
 - 2026-06-07：到时提示音改为可选旋律（默认马里奥过关音），新增 `buzzer_music.h` 与非阻塞旋律播放器。已在主机端模拟三段乐谱的音符时序（均按序播完并停止，频率 392–2093Hz），并用方波合成试听确认；`idf.py build` 上板编译待用户在本地 ESP-IDF 环境验证。
 - 2026-08-14：工程基础改造。① `main.cpp` 按模块拆分（sedentary_timer / presence_detector / buzzer_player / display_ui / web_ui / ota_update / wifi_net / cloud_client / app_state），行为保持等价；② 新增 `sedentary_timer` 主机端单元测试（53 项断言全过，`tools/test-host.sh`）；③ 新增 `/ota` 网页固件升级与 `ota_0/ota_1` 双 OTA 分区表（samples 仍为 4MB）；④ `sdkconfig.defaults` 锁定 `esp32s3` 目标（与 `build-idf.ps1` 一致，修正此前本机默认 esp32 目标的偏差）；⑤ 新增 `tools/build.sh`（macOS/Linux）、GitHub Actions CI（主机测试 + 模型脚本冒烟 + ESP-IDF 构建）。本机 ESP-IDF v6.0.2 干净构建通过（app 1.0MB / 分区余量 82%）。
+- 2026-08-24：显示层抽象。① 新增 `DisplayBackend` 抽象基类，5x7 字库和文字渲染从 SSD1306 驱动里提出来变成共享实现，两个后端字宽一致；② 新增 `display_layout`，界面布局改为按画布尺寸推导（`Rich`/`Compact`/`Minimal`），`128x64` 的布局逐像素与重构前一致并有断言兜住；③ 新增 IS31FL3733 LED 点阵后端和 `-DDISPLAY_BACKEND=1` 构建开关；④ 新增 `test_display_layout` 主机端单元测试（193 项断言全过），用假后端把像素画进字符网格，验证 `32x8` 上 `45:00` 放得下、不越界、不被截断。两个后端均通过本机 ESP-IDF v6.0.2 干净构建。点阵驱动尚未上板验证，`matrixTarget()` 的引脚映射是占位实现。
 - 2026-08-14：实机验证（串口日志）。全量刷写后设备正常启动：boot → OLED 首帧 258ms → 摄像头（OV5640 + 自动对焦后台完成，focused）→ AP `Bell-Robot` + DHCP → 网页服务 → 倒计时首帧 1661ms；NVS 计时设置保留（sit=45 / away=2）；坐姿识别模型概率 89–90%，状态机 WAIT→SIT 转移正常；samples SPIFFS 分区挂载正常。`/ota` 上传与双分区启动切换仍需手机端走一遍验证。

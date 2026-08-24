@@ -7,7 +7,7 @@ on:
 
 jobs:
   host-tests:
-    name: Host unit tests (timer state machine)
+    name: Host unit tests (timer state machine + display layout)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,11 +43,19 @@ jobs:
     container: espressif/idf:release-v6.0
     steps:
       - uses: actions/checkout@v4
-      - name: Build firmware
+      - name: Build firmware (SSD1306 OLED backend, default)
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
           idf.py build
+        working-directory: embedded/firmware-idf
+      # 点阵后端目前不是默认值，不在这里编就会悄悄烂掉——
+      # 硬件还没到，编译是唯一能持续验证它的手段。
+      - name: Build firmware (IS31FL3733 LED matrix backend)
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py -B build-matrix -DDISPLAY_BACKEND=1 build
         working-directory: embedded/firmware-idf
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4

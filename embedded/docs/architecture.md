@@ -12,7 +12,8 @@
 ```mermaid
 flowchart LR
   Camera["DC5640 AF 120度"] --> MCU["ESP32-S3 N16R8 CAM"]
-  OLED["SPI SSD1306 OLED"] <--> MCU
+  OLED["SPI SSD1306 OLED<br/>128x64"] <--> MCU
+  Matrix["IS31FL3733 LED 点阵<br/>32x10<br/>（CNC 外壳版）"] <--> MCU
   ResetButton["GPIO1 Reset Button"] --> MCU
   SampleButton["GPIO2 Sample Button"] --> MCU
   MCU --> Buzzer["Buzzer"]
@@ -20,6 +21,8 @@ flowchart LR
   Router["2.4G Wi-Fi"] <--> MCU
   MCU --> Cloud["Cloud Relay"]
 ```
+
+显示后端二选一，由编译期开关 `DISPLAY_BACKEND` 决定，见 `docs/pinout.md`。
 
 ## 固件模块
 
@@ -30,14 +33,17 @@ flowchart LR
 - `sedentary_timer.h/.cpp`：久坐计时状态机（Idle/Sitting/AwayGrace/AwayWarning/Alerting），纯逻辑、无 ESP 依赖，配套 `test/test_sedentary_timer.cpp` 主机端单元测试。
 - `presence_detector.h/.cpp`：摄像头帧锁/采集/旋转/JPEG 转换，`PresenceDetector`（模型优先，模型不可用时回退 ROI 灰度差分，连续帧去抖）。
 - `buzzer_player.h/.cpp`：LEDC 蜂鸣器驱动、短提示序列、到时旋律循环播放（乐谱见 `buzzer_music.h`）。
-- `display_ui.h/.cpp`：OLED 启动画面（BOOT/CAMERA/WIFI/SERVER 进度条）、倒计时主界面、瞬时 overlay、OLED 自检。
+- `display_ui.h/.cpp`：显示编排——启动画面（BOOT/CAMERA/WIFI/SERVER 进度条）、倒计时主界面、瞬时 overlay、OLED 自检。持有当前后端实例，本身不含布局和像素逻辑。
+- `display_backend.h/.cpp`：显示后端抽象基类。像素操作是纯虚的，5x7 字库和 `textScaled()` 是建立在 `setPixel()` 上的共享实现——所以两个后端字宽一致，居中计算不会分叉。无 ESP 依赖。
+- `display_layout.h/.cpp`：界面布局与帧内容，纯逻辑。按后端上报的画布尺寸推导布局：`Rich`（128x64，状态行 + 大倒计时 + PROB）、`Compact`（32x16，倒计时 + 进度条）、`Minimal`（32x8，只有倒计时）。配套 `test/test_display_layout.cpp` 主机端单元测试。
 - `web_ui.h/.cpp`：本地 HTTP 接口，包括 `/`、`/capture`、`/stream`、`/status`、`/settings`、`/reset`、`/label`、`/samples/*`、`/cloud*`。
 - `ota_update.h/.cpp`：`/ota` 网页固件升级，写入空闲 OTA 分区（`ota_0`/`ota_1` 双分区）后校验重启。
 - `wifi_net.h/.cpp`：AP 直连 / STA 云远程模式切换与连接状态查询。
 - `cloud_client.h/.cpp`：STA 联网后每秒轮询云中转，上报状态并执行云端命令（capture/set_settings/reset）。
 - `sample_store.h/.cpp`：SPIFFS 采样缓存（JPEG + 元数据，固定保留最新 64 组）。
 - `seat_model.h/.cpp`：对 `8x8` 灰度特征做本地 int8 二分类，输出桌前坐姿概率。
-- `ssd1306_spi.h/.cpp`：SSD1306 SPI 驱动。
+- `ssd1306_spi.h/.cpp`：SSD1306 SPI 后端，只负责像素缓冲和 SPI 时序。
+- `led_matrix_is31fl3733.h/.cpp`：IS31FL3733 LED 点阵后端（I2C，每点 8 位 PWM，按需级联多片）。尚未在实机验证。
 
 ## 设备身份
 

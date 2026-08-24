@@ -20,6 +20,37 @@
 
 不要按 I2C 屏理解这组 `SCL/SDA`；该屏幕因为有 `RES/DC/CS`，所以当前按 SPI 驱动，没有 I2C 地址。
 
+## LED 点阵（IS31FL3733）
+
+对应 `industrial-design/tech1-cnc-r2/` 的 CNC 外壳方案（`32 x 10` @ `1.4mm` 间距，320 点，2 片驱动），用点阵替代 OLED。**尚未在实机上验证**，引脚是按「避开已占用管脚」选的，硬件到手后需要复核。
+
+| 点阵驱动板 | ESP32-S3 GPIO | 说明 |
+| --- | ---: | --- |
+| SDA | GPIO 38 | 可在 `PIN_MATRIX_SDA` 修改 |
+| SCL | GPIO 39 | 可在 `PIN_MATRIX_SCL` 修改 |
+| VCC | 3V3 | |
+| GND | GND | |
+
+选 GPIO38/39 而不是 OLED 腾出来的 47/48，是为了让两块屏可以同时接着做台面对比。等 OLED 彻底退役后可以迁回 47/48。
+
+不要用 GPIO33-37：N16R8 模组的八线 PSRAM 占用这一段，接上去会导致启动失败。
+
+芯片 I2C 地址由每片的 `ADDR1/ADDR2` 拉阻决定，在 `MATRIX_I2C_ADDRESSES` 里配置，数量必须不少于 `MATRIX_WIDTH x MATRIX_HEIGHT / 192` 算出的片数（编译期有 `static_assert` 兜底）。
+
+固件里 `(x, y) -> (第几片, SW, CS)` 的映射集中在 `led_matrix_is31fl3733.cpp` 的 `matrixTarget()`。当前是按行优先线性编号的占位实现，**真实映射由 LED PCB 走线决定，打样前必须回到这个函数对齐**。
+
+### 切换显示后端
+
+不改代码的做法：
+
+```bash
+cd embedded/firmware-idf
+idf.py -DDISPLAY_BACKEND=1 build     # IS31FL3733 LED 点阵
+idf.py build                         # 默认 SSD1306 OLED
+```
+
+或者改 `main/app_config.h` 里的 `DISPLAY_BACKEND` 默认值。界面布局不需要跟着改——`display_layout.h` 按后端上报的画布尺寸推导，`128x64` 走三行布局，`32x10` 和 `32x16` 走倒计时加进度条，`32x8` 只剩倒计时。
+
 ## 无源蜂鸣器
 
 | 无源蜂鸣器 | ESP32-S3 默认 GPIO | 说明 |
